@@ -10,7 +10,9 @@
 #include <glm/gtc/type_ptr.hpp>
 //#include <glad/glad_wgl.h>
 #include "common/Log.h"
+#include "common/WorkerThread.h"
 #include "lib/bel_ImgLoader/include/stb_image.h"
+//#include "lib/bel_lodepng/include/lodepng.h"
 
 #define MAX_LOADSTRING 100
 
@@ -20,18 +22,21 @@ WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
 WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 HDC   ghDC;
 HGLRC ghRC;
+GLsizei m_ctxWidth, m_ctxHeight;
 std::shared_ptr<Sample*> g_sample;
 std::mutex m_mutex;
 std::condition_variable cv;
 bool m_isWaiting;
 std::unique_ptr<utils::WorkerThread<void()>> registerNotify;
 std::unique_ptr<utils::WorkerThread<void()>> processLifeCycle;
+utils::WorkerThread<double()> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, 50, true, 5);
 bool isSignalSuspend;
 HANDLE g_plmSuspendComplete = nullptr;
 HANDLE g_plmSignalResume = nullptr;
 PAPPSTATE_REGISTRATION hPLM = {};
 bool m_isExiting;
 bool m_isInitDone;
+bool m_isPause;
 
 #define BLACK_INDEX     0 
 #define RED_INDEX       13 
@@ -46,7 +51,7 @@ constexpr int initial_up = max_scale / divide;
 int up = initial_up;
 bool isDown = false;
 unsigned int shaderProgram;
-unsigned int VBO, VAO, EBO;
+unsigned int VBO, VAO, EBO, internalFormat;
 unsigned int texture;
 GLfloat latitude, longitude, latinc, longinc;
 GLdouble radius;
@@ -57,25 +62,30 @@ GLdouble radius;
 
 const char* vertexShaderSource = "#version 460 core\n"
 "layout (location = 0) in vec3 aPos;\n"
-"layout (location = 1) in vec2 aTexCoord;\n"
+//"layout (location = 1) in vec2 aTexCoord;\n"
 "uniform mat4 transform;\n"
+"uniform mat4 u_transform_color;\n"
+"uniform mat4 model;\n"
+"uniform mat4 view;\n"
+"uniform mat4 projection;\n"
 "out mat4 transform_color;\n"
-"out vec2 TexCoord;\n"
+//"out vec2 TexCoord;\n"
 "void main()\n"
 "{\n"
-"   gl_Position = transform * vec4(aPos, 1.0);\n"
-"   transform_color = transform;\n"
-"   TexCoord = aTexCoord;\n"
+"   gl_Position = projection * view * transform * vec4(aPos, 1.0);\n"
+"   transform_color = u_transform_color;\n"
+//"   TexCoord = aTexCoord;\n"
 "}\0";
 
 const char* fragmentShaderSource = "#version 460 core\n"
 "out vec4 FragColor;\n"
 "in mat4 transform_color;\n"
-"in vec2 TexCoord;\n"
-"uniform sampler2D ourTexture;"
+//"in vec2 TexCoord;\n"
+//"uniform sampler2D ourTexture;"
 "void main()\n"
 "{\n"
-"   FragColor = texture(ourTexture, TexCoord);\n"
+//"   FragColor = texture(ourTexture, TexCoord);\n"
+"   FragColor = vec4(transform_color);\n"
 "}\n\0";
 
 // Forward declarations of functions included in this code module:
@@ -100,10 +110,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     // TODO: Place code here.
     g_sample = std::make_shared<Sample*>(new Sample());
-    registerNotify = std::make_unique<utils::WorkerThread<void()>>(true);
-    registerNotify->ChangeMode(utils::MODE::MESSAGE_QUEUE);
-    processLifeCycle = std::make_unique<utils::WorkerThread<void()>>(true);
-    registerNotify->CreateWorkerThread([]() {});
+    registerNotify = std::make_unique<utils::WorkerThread<void()>>(false, "State Notification Thread", utils::MODE::MESSAGE_QUEUE);
+    processLifeCycle = std::make_unique<utils::WorkerThread<void()>>(true, "Life Cycle Update Thread");
     processLifeCycle->CreateWorkerThread([&]() {
         while (!m_isExiting && m_isInitDone)
         {
@@ -117,19 +125,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                     std::lock_guard<std::mutex> lk_guard(m_mutex);
                     isSignalSuspend = false;
                 }
-                (*g_sample)->OnResuming();
+                if (!m_isPause)
+                {
+                    (*g_sample)->OnResuming();
+                }
             }
 
-            // update thread loop
-            if (!isSignalSuspend && (*g_sample)->GetThread()->IsOneTimeRun() && (*g_sample)->GetThread()->IsProcesDone())
+            // update thread loop            
+            if (!m_isPause && (*g_sample)->GetThread()->GetCurrentMode() == utils::MODE::UPDATE_CALLBACK)
             {
                 if (m_isExiting)
                 {
                     utils::Log::e("UpdateThreadLoop", std::format("m_isExiting={}, should not be occured here!!!", m_isExiting).c_str());
                     break;
                 }
-                (*g_sample)->ResetCallbackRenderThread();
                 (*g_sample)->GetThread()->Pause(false);
+                (*g_sample)->GetThread()->RunOneTime(false);
             }
             Sleep(1);
         }
@@ -171,9 +182,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         }
     }
 
-    g_sample.reset();
-    registerNotify.reset();
+    utils::Log::d("Main Thread", "Exiting Game");
     processLifeCycle.reset();
+    utils::Log::d("Main Thread", "Exited processLifeCycle thread");
+    registerNotify.reset();
+    utils::Log::d("Main Thread", "Exited notify thread");
+    g_sample.reset();
+    utils::Log::d("Main Thread", "Exited Render thread");
 
     CloseHandle(g_plmSuspendComplete);
     CloseHandle(g_plmSignalResume);
@@ -244,6 +259,8 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
 GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 {
+    m_ctxWidth = ctxWidth;
+    m_ctxHeight = ctxHeight;
     glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
     // build and compile our shader program
     // ------------------------------------
@@ -289,21 +306,29 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
     // ------------------------------------------------------------------
     float vertices[] = {
         // postions            // texCoords
-         0.5f,  0.5f, 0.0f,    3.0f, 3.0f,                                         // top right
-         0.5f, -0.5f, 0.0f,    3.0f, 0.0f,                                         // bottom right
-        -0.5f, -0.5f, 0.0f,    0.0f, 0.0f,                                         // bottom left
-        -0.5f,  0.5f, 0.0f,    0.0f, 3.0f,                                         // top left
+         0.5f,  0.5f,  0.5f,    //3.0f, 3.0f,                                         // top right outer
+         0.5f, -0.5f,  0.5f,    //3.0f, 0.0f,                                         // bottom right outer
+        -0.5f, -0.5f,  0.5f,    //0.0f, 0.0f,                                         // bottom left outer
+        -0.5f,  0.5f,  0.5f,    //0.0f, 3.0f,                                         // top left outer
+         0.5f,  0.5f, -0.5f,    //3.0f, 3.0f,                                         // top right inner
+         0.5f, -0.5f, -0.5f,    //3.0f, 0.0f,                                         // bottom right inner
+        -0.5f, -0.5f, -0.5f,    //0.0f, 0.0f,                                         // bottom left inner
+        -0.5f,  0.5f, -0.5f,    //0.0f, 3.0f,                                         // top left inner
     };
 
-    // Flip vertically texCoords
-    /*1.0f, 0.0f,
-    1.0f, 1.0f,
-    0.0f, 1.0f,
-    0.0f, 0.0f,*/
-
     unsigned int indices[] = {  // note that we start from 0!
-        0, 1, 2,   // first triangle
-        2, 3, 0    // second triangle
+        0, 1, 2,    // first triangle outer
+        2, 3, 0,    // second triangle outer
+        4, 5, 6,    // first triangle inner
+        6, 7, 4,    // second triangle inner
+        0, 3, 4,    // first triangle top
+        4, 7, 3,    // second triangle top
+        1, 2, 5,    // first triangle bottom
+        5, 6, 2,    // second triangle bottom
+        2, 3, 6,    // first triangle left
+        6, 7, 3,    // second triangle left
+        0, 1, 4,    // first triangle right
+        4, 5, 1,    // second triangle right
     };
 
     glGenVertexArrays(1, &VAO);
@@ -318,59 +343,66 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    //glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(0);
-    glEnableVertexAttribArray(1);
+    //glEnableVertexAttribArray(1);
 
-    glGenTextures(1, &texture);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texture);
+    //glGenTextures(1, &texture);
+    //glActiveTexture(GL_TEXTURE0);
+    //glBindTexture(GL_TEXTURE_2D, texture);
 
-    // set the texture wrapping parameters
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);	// set texture wrapping to GL_REPEAT (default wrapping method)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    // set texture filtering parameters
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    //// set the texture wrapping parameters
+    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);	// set texture wrapping to GL_REPEAT (default wrapping method)
+    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    //// set texture filtering parameters
+    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    enum class imageChannel
-    {
-        RGB = 3,
-        RGBA
-    };
+    //enum class imageChannel
+    //{
+    //    RGB = 3,
+    //    RGBA
+    //};
 
-    int width, height, nrChannels, desiredChannel, internalFormat;
-    stbi_set_flip_vertically_on_load(true);
-    unsigned char* data = stbi_load("Assets/OK!.png", &width, &height, &nrChannels, 0);
-    desiredChannel = nrChannels; // format color channels
-    switch (desiredChannel)
-    {
-    case static_cast<int>(imageChannel::RGBA):
-    {
-        internalFormat = GL_RGBA;
-    }
-    break;
-    case static_cast<int>(imageChannel::RGB):
-    {
-        internalFormat = GL_RGB;
-    }
-    break;
-    }
-    if (data)
-    {
-        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, internalFormat, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-        utils::Log::i("initializeShaderProgram", std::format("width:{}, height:{}, nrChannels:{}", width, height, nrChannels).c_str());
-    }
-    else
-    {
-        utils::Log::e("initializeShaderProgram", "Failed to load Texture!!!");
-    }
-    // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
+    //int width, height, nrChannels, desiredChannel;
+    //stbi_set_flip_vertically_on_load(true);
+    //unsigned char* data = stbi_load("Assets/OK!.png", &width, &height, &nrChannels, 0);
+    //desiredChannel = nrChannels; // format color channels
+    //switch (desiredChannel)
+    //{
+    //case static_cast<int>(imageChannel::RGBA):
+    //{
+    //    internalFormat = GL_RGBA;
+    //}
+    //break;
+    //case static_cast<int>(imageChannel::RGB):
+    //{
+    //    internalFormat = GL_RGB;
+    //}
+    //break;
+    //}
+    //if (data)
+    //{
+    //    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, internalFormat, GL_UNSIGNED_BYTE, data);
+    //    glGenerateMipmap(GL_TEXTURE_2D);
+    //    utils::Log::i("initializeShaderProgram", std::format("width:{}, height:{}, nrChannels:{}", width, height, nrChannels).c_str());
+    //}
+    //else
+    //{
+    //    utils::Log::e("initializeShaderProgram", "Failed to load Texture!!!");
+    //}
+    //// note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
+    //stbi_image_free(data);
+
+    // pass projection matrix to shader (as projection matrix rarely changes there's no need to do this per frame)
+    // -----------------------------------------------------------------------------------------------------------
+    glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)ctxWidth / (float)ctxHeight, 0.1f, 100.0f);
+    glUseProgram(shaderProgram);
+    unsigned int projectionLoc = glGetUniformLocation(shaderProgram, "projection");
+    glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projection));
+
     glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-    stbi_image_free(data);
 
     // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
     // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
@@ -385,9 +417,12 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 
 GLvoid resize(GLsizei width, GLsizei height)
 {
+    m_ctxWidth = width;
+    m_ctxHeight = height;
     glViewport(0, 0, width, height);
+    (*g_sample)->GetThread()->Pause(true);
     (*g_sample)->GetThread()->ChangeMode(utils::MODE::UPDATE_CALLBACK);
-    (*g_sample)->ResetCallbackRenderThread();
+    (*g_sample)->ResetCallbackRenderThread(width, height);
 }
 
 void createGLContext()
@@ -447,6 +482,40 @@ int loadOpenGLFunctions()
     return 1;
 }
 
+double Calc_pi(int n, int start, int skip)
+{
+    double result = 0.0;
+    for (int i = start; i < n; i+= skip)
+    {
+        int sign = std::pow(-1, i);
+        double term = 1.0 / (i * 2 + 1);
+        result += sign * term;
+    }
+    return result * 4;
+}
+
+double Calc_pi_MT(int n)
+{
+    double result = 0.0;
+    unsigned int CONCURRENCY = std::thread::hardware_concurrency();
+    for (unsigned int i = 0; i < CONCURRENCY; i++)
+    {
+        calcThread.PushCallback(&Calc_pi, n, i, CONCURRENCY);
+    }
+    calcThread.Dispatch();
+    int i = 0;
+    while (!calcThread.HasAllMTProcessDone())
+    {
+        if (!calcThread.IsEmptyResult())
+        {
+            result += calcThread.PopResult();
+            i++;
+        }
+        if (i == CONCURRENCY) break;
+    }
+    return result;
+}
+
 //
 //  FUNCTION: WndProc(HWND, UINT, WPARAM, LPARAM)
 //
@@ -463,96 +532,113 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message)
     {
     case WM_CREATE:
-        {
-            ghDC = GetDC(hWnd);
-            (*g_sample)->GetThread()->PushCallback<void()>(&createGLContext);
-            (*g_sample)->GetThread()->RunOneTime();
-            Wait();
+    {
+        ghDC = GetDC(hWnd);
+        (*g_sample)->GetThread()->PushCallback(&createGLContext);
+        (*g_sample)->GetThread()->RunOneTime(true);
+        Wait();
 
-            GetClientRect(hWnd, &rect);
+        GetClientRect(hWnd, &rect);
             
-            (*g_sample)->GetThread()->PushCallback<GLvoid(GLsizei, GLsizei)>(&initializeShaderProgram, rect.right, rect.bottom);
-            (*g_sample)->GetThread()->RunOneTime();
-            Wait();
+        (*g_sample)->GetThread()->PushCallback(&initializeShaderProgram,(GLsizei) rect.right,(GLsizei) rect.bottom);
+        (*g_sample)->GetThread()->RunOneTime(true);
+        Wait();
 
-            m_isInitDone = true;
-        }
-        break;
+        m_isInitDone = true;
+    }
+    break;
     case WM_COMMAND:
+    {
+        int wmId = LOWORD(wParam);
+        // Parse the menu selections:
+        switch (wmId)
         {
-            int wmId = LOWORD(wParam);
-            // Parse the menu selections:
-            switch (wmId)
-            {
-            case IDM_ABOUT:
-                DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
-                break;
-            case IDM_EXIT:
-                if (MessageBoxA(0, "Do you want to exit game?", "Warning", MB_YESNO) == IDYES)
-                {
-                    ExitGame(hWnd);
-                }
-                break;
-            default:
-                return DefWindowProc(hWnd, message, wParam, lParam);
-            }
-        }
-        break;
-    case WM_PAINT:
-        {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hWnd, &ps);
-            // TODO: Add any drawing code that uses hdc here...
-            EndPaint(hWnd, &ps);
-        }
-        break;
-    case WM_SIZE:
-        {
-            if (wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)
-            {
-                GetClientRect(hWnd, &rect);
-                (*g_sample)->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE);
-                (*g_sample)->GetThread()->PushCallback<GLvoid(GLsizei, GLsizei)>(&resize, rect.right, rect.bottom);
-            }
-        }
-        break;
-    case WM_ACTIVATEAPP:
-        {
-            registerNotify->PushCallback<void(WPARAM)>([&](WPARAM wParam) {
-                if (!m_isExiting)
-                {
-                    if (wParam == TRUE)
-                    {
-                        SetEvent(g_plmSignalResume);
-                    }
-                    else
-                    {
-                        ResetEvent(g_plmSuspendComplete);
-                        ResetEvent(g_plmSignalResume);
-                        {
-                            std::lock_guard<std::mutex> lk_guard(m_mutex);
-                            isSignalSuspend = true;
-                        }
-
-                        // To defer suspend, you must wait to exit this callback
-                        (void)WaitForSingleObject(g_plmSuspendComplete, INFINITE);
-                    }
-                }
-            }, wParam);
-        }
-        break;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        break;
-    case WM_CLOSE:
+        case IDM_ABOUT:
+            DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
+            break;
+        case IDM_EXIT:
         if (MessageBoxA(0, "Do you want to exit game?", "Warning", MB_YESNO) == IDYES)
         {
             ExitGame(hWnd);
         }
-        return 0;
         break;
+        case IDM_EXPORT:
+        {
+            utils::WorkerThread t;
+            t.CreateWorkerThread([]() {
+                utils::Log::d("Debug", "Meter Performance");
+                utils::Log::d("Debug", std::format("test: {}", Calc_pi_MT(1E9)).c_str());
+            });
+            t.Detach();
+        }
+        break;
+        case IDM_PAUSE:
+        {
+            m_isPause = !(*g_sample)->GetThread()->IsPaused();
+            (*g_sample)->GetThread()->Pause(m_isPause);
+        }
+        default:
+            return DefWindowProc(hWnd, message, wParam, lParam);
+        }
+    }
+    break;
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        // TODO: Add any drawing code that uses hdc here...
+        EndPaint(hWnd, &ps);
+    }
+    break;
+    case WM_SIZE:
+    {
+        if (wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)
+        {
+            GetClientRect(hWnd, &rect);
+            (*g_sample)->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE, 1);
+            (*g_sample)->GetThread()->PushCallback(&resize,(GLsizei) rect.right, (GLsizei) rect.bottom);
+            (*g_sample)->GetThread()->Dispatch();
+        }
+    }
+    break;
+    case WM_ACTIVATEAPP:
+    {
+        registerNotify->PushCallback([&](WPARAM wParam) {
+            if (!m_isExiting)
+            {
+                if (wParam == TRUE)
+                {
+                    SetEvent(g_plmSignalResume);
+                }
+                else
+                {
+                    ResetEvent(g_plmSuspendComplete);
+                    ResetEvent(g_plmSignalResume);
+                    {
+                        std::lock_guard<std::mutex> lk_guard(m_mutex);
+                        isSignalSuspend = true;
+                    }
+
+                    // To defer suspend, you must wait to exit this callback
+                    (void)WaitForSingleObject(g_plmSuspendComplete, INFINITE);
+                }
+            }
+        }, wParam);
+        registerNotify->Dispatch();
+    }
+    break;
+    case WM_DESTROY:
+    PostQuitMessage(0);
+    break;
+    case WM_CLOSE:
+    if (MessageBoxA(0, "Do you want to exit game?", "Warning", MB_YESNO) == IDYES)
+    {
+        ExitGame(hWnd);
+    }
+    return 0;
+    break;
     default:
-        return DefWindowProc(hWnd, message, wParam, lParam);
+    return DefWindowProc(hWnd, message, wParam, lParam);
     }
     return 0;
 }
@@ -596,46 +682,70 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 void ExitGame(HWND hWnd)
 {
     m_isExiting = true;
-    (*g_sample)->GetThread()->Pause(true);
+    (*g_sample)->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE);
     // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------
-    (*g_sample)->GetThread()->PushCallback<void()>(&CleanResource);
-    (*g_sample)->GetThread()->RunOneTime();
+    (*g_sample)->GetThread()->PushCallback(&CleanResource);
 
     if (ghRC)
     {
-        (*g_sample)->GetThread()->PushCallback<BOOL WINAPI(HGLRC)>(&wglDeleteContext, ghRC);
-        (*g_sample)->GetThread()->RunOneTime();
+        (*g_sample)->GetThread()->PushCallback(&wglDeleteContext, (HGLRC) ghRC);
     }
     if (ghDC)
     {
-        (*g_sample)->GetThread()->PushCallback<int WINAPI(HWND, HDC)>(&ReleaseDC, hWnd, ghDC);
-        (*g_sample)->GetThread()->RunOneTime();
+        (*g_sample)->GetThread()->PushCallback(&ReleaseDC, (HWND) hWnd, (HDC) ghDC);
     }
+    (*g_sample)->GetThread()->Dispatch();
     DestroyWindow(hWnd);
 }
 
-GLvoid drawScene(DX::StepTimer const& timer)
+GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei const& ctxHeight)
 {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // bind Texture
     //glBindTexture(GL_TEXTURE_2D, texture);
 
+    glUseProgram(shaderProgram);
+
+    // camera/view transformation
+    glm::mat4 view = glm::mat4(1.0f); // make sure to initialize matrix to identity matrix first
+    float radius = 5.0f;
+    float camX = static_cast<float>(sin(timer.GetTotalSeconds()) * radius);
+    float camZ = static_cast<float>(cos(timer.GetTotalSeconds()) * radius);
+    view = glm::lookAt(glm::vec3(camX, 0.0f, camZ), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    unsigned int viewLoc = glGetUniformLocation(shaderProgram, "view");
+    glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
+
     // create transformations
-    glm::mat4 transform = glm::mat4(1.0f); // make sure to initialize matrix to identity matrix first
+    glm::mat4 transform = glm::mat4(1.0f); 
+    glm::mat4 transformColor = glm::mat4(1.0f);
+    // make sure to initialize matrix to identity matrix first
     /*(up < max_scale && !isDown) ? ++up : isDown = true;
     (up > (initial_up) && isDown) ? --up : isDown = false;
     float scale = (up) * ((float) 1 / max_scale);*/
     float scale = ((sin(timer.GetTotalSeconds()) + 1) * 0.5f * divided) + (1 - (double)divided);
-    transform = glm::scale(transform, glm::vec3(scale, scale, scale));
-
+    /*float ratio = ctxWidth * 1.0f / ctxHeight;
+    float new_width = 1.0f, new_height = 1.0f;
+    if (ratio > 1)
+    {
+        new_width = 1.0f / ratio;
+    }
+    else
+    {
+        new_height = ratio;
+    }
+    transform = glm::scale(transform, glm::vec3(new_width, new_height, 1.0f));*/
+    //transform = glm::rotate(transform, (float)timer.GetTotalSeconds(), glm::vec3(0.0, 1.0, 0.0));
+    transformColor = glm::scale(transformColor, glm::vec3(scale, scale, scale));
     // draw our first triangle
-    glUseProgram(shaderProgram);
     unsigned int transformLoc = glGetUniformLocation(shaderProgram, "transform");
+    unsigned int transformColorLoc = glGetUniformLocation(shaderProgram, "u_transform_color");
     glUniformMatrix4fv(transformLoc, 1, GL_FALSE, glm::value_ptr(transform));
+    glUniformMatrix4fv(transformColorLoc, 1, GL_FALSE, glm::value_ptr(transformColor));
     //glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    // calculate the model matrix for each object and pass it to shader before drawing
+    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
     //glBindVertexArray(0); // no need to unbind it every time
 
     SwapBuffers(ghDC);

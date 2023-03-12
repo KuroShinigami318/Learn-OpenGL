@@ -3,7 +3,9 @@
 #include <memory>
 #include <cstdint>
 #include "common/StepTimer.h"
+#include "common/Log.h"
 #include "common/WorkerThread.h"
+#include <glad/glad.h>
 
 class Sample
 {
@@ -18,7 +20,7 @@ public:
 
 	DX::StepTimer GetTimer();
 
-	void Tick();
+	void Tick(const GLsizei& ctxWidth, const GLsizei& ctxHeight);
 
 	// Messages
 	void OnSuspending();
@@ -26,7 +28,7 @@ public:
 
 	utils::WorkerThread<void()>* GetThread();
 
-	void ResetCallbackRenderThread();
+	void ResetCallbackRenderThread(const GLsizei& ctxWidth, const GLsizei& ctxHeight);
 
 private:
 	void Update(DX::StepTimer const& timer);

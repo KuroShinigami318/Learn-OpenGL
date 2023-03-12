@@ -1,16 +1,12 @@
 #include "Sample.h"
-#include "common/Log.h"
-#include "common/WorkerThread.h"
-#include <glad/glad.h>
 #include <format>
-#include <memory>
+#include <cmath>
 
-extern GLvoid drawScene(DX::StepTimer const& timer);
+extern GLvoid drawScene(DX::StepTimer const& timer, const GLsizei& ctxWidth, const GLsizei& ctxHeight);
 
 Sample::Sample() : m_frame(0)
 {
-	renderThread = std::make_shared<utils::WorkerThread<void()>>(false);
-	renderThread->CreateWorkerThread([]() {});
+	renderThread = std::make_shared<utils::WorkerThread<void()>>(false, "Render Thread");
 }
 
 Sample::~Sample()
@@ -23,33 +19,33 @@ DX::StepTimer Sample::GetTimer()
 	return m_timer;
 }
 
-void Sample::Tick()
+void Sample::Tick(const GLsizei& ctxWidth, const GLsizei& ctxHeight)
 {
 	m_timer.Tick([&]()
 	{
 		Update(m_timer);
-		drawScene(m_timer);
+		drawScene(m_timer, ctxWidth, ctxHeight);
 	});
 	m_frame++;
 }
 
 void Sample::Update(DX::StepTimer const&)
 {
-	utils::Log::i("Sample::Update", std::format("Get FPS: {}", m_timer.GetFramesPerSecond()).c_str());
+	//utils::Log::i("Sample::Update", std::format("Get FPS: {}", m_timer.GetFramesPerSecond()).c_str());
 }
 
 void Sample::OnSuspending()
 {
 	utils::Log::d("Sample::OnSuspending", "Suspended");
-	//renderThread->Pause(true);
-	renderThread->Suspend();
+	renderThread->Pause(true);
+	/*renderThread->Suspend();*/
 }
 
 void Sample::OnResuming()
 {
 	utils::Log::d("Sample::OnResuming", "Resumed");
-	//renderThread->Pause(false);
-	renderThread->Resume();
+	renderThread->Pause(false);
+	/*renderThread->Resume();*/
 }
 
 utils::WorkerThread<void()>* Sample::GetThread()
@@ -57,9 +53,9 @@ utils::WorkerThread<void()>* Sample::GetThread()
 	return renderThread.get();
 }
 
-void Sample::ResetCallbackRenderThread()
+void Sample::ResetCallbackRenderThread(const GLsizei& ctxWidth, const GLsizei& ctxHeight)
 {
-	utils::WorkerThreadERR result = renderThread->PushCallback<void()>(std::bind(&Sample::Tick, this));
+	utils::WorkerThreadERR result = renderThread->PushCallback(&Sample::Tick, this, ctxWidth, ctxHeight);
 	if (result != utils::WorkerThreadERR::SUCCESSS)
 	{
 		utils::Log::e("Sample::ResetCallbackRenderThread", std::format("Error in pushing callback to render thread with error code [{}]", utils::WorkerThreadERRCode[(int)result]).c_str());

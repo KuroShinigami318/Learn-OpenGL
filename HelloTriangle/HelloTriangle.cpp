@@ -72,7 +72,7 @@ const char* vertexShaderSource = "#version 460 core\n"
 //"out vec2 TexCoord;\n"
 "void main()\n"
 "{\n"
-"   gl_Position = projection * view * transform * vec4(aPos, 1.0);\n"
+"   gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
 "   transform_color = u_transform_color;\n"
 //"   TexCoord = aTexCoord;\n"
 "}\0";
@@ -85,7 +85,7 @@ const char* fragmentShaderSource = "#version 460 core\n"
 "void main()\n"
 "{\n"
 //"   FragColor = texture(ourTexture, TexCoord);\n"
-"   FragColor = vec4(transform_color);\n"
+"   FragColor = transform_color * vec4(1.0);\n"
 "}\n\0";
 
 // Forward declarations of functions included in this code module:
@@ -564,12 +564,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
         case IDM_EXPORT:
         {
-            utils::WorkerThread t;
-            t.CreateWorkerThread([]() {
-                utils::Log::d("Debug", "Meter Performance");
-                utils::Log::d("Debug", std::format("test: {}", Calc_pi_MT(1E9)).c_str());
-            });
-            t.Detach();
+            if (!m_isWaiting)
+            {
+                m_isWaiting = true;
+                utils::WorkerThread t;
+                t.CreateWorkerThread([&]() {
+                    utils::Log::d("Debug", "Meter Performance");
+                    double result = Calc_pi_MT(1E9);
+                    utils::Log::d("Debug", std::format("test: {}", result).c_str());
+                    MessageBoxA(0, std::format("Pi: {}", result).c_str(), "Result", MB_SERVICE_NOTIFICATION);
+                    m_isWaiting = false;
+                    });
+                t.Detach();
+            }
         }
         break;
         case IDM_PAUSE:
@@ -718,7 +725,7 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
 
     // create transformations
-    glm::mat4 transform = glm::mat4(1.0f); 
+    glm::mat4 model = glm::mat4(1.0f);
     glm::mat4 transformColor = glm::mat4(1.0f);
     // make sure to initialize matrix to identity matrix first
     /*(up < max_scale && !isDown) ? ++up : isDown = true;
@@ -739,14 +746,25 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
     //transform = glm::rotate(transform, (float)timer.GetTotalSeconds(), glm::vec3(0.0, 1.0, 0.0));
     transformColor = glm::scale(transformColor, glm::vec3(scale, scale, scale));
     // draw our first triangle
-    unsigned int transformLoc = glGetUniformLocation(shaderProgram, "transform");
+    unsigned int modelLoc = glGetUniformLocation(shaderProgram, "model");
     unsigned int transformColorLoc = glGetUniformLocation(shaderProgram, "u_transform_color");
-    glUniformMatrix4fv(transformLoc, 1, GL_FALSE, glm::value_ptr(transform));
+    glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
     glUniformMatrix4fv(transformColorLoc, 1, GL_FALSE, glm::value_ptr(transformColor));
     //glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
     // calculate the model matrix for each object and pass it to shader before drawing
     glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
     //glBindVertexArray(0); // no need to unbind it every time
+
+    //front mini model
+    float modelAspect = 0.4;
+    model = glm::translate(model, glm::vec3(2.0f, (modelAspect - 1.0f) / 2, 0.0f));
+    model = glm::scale(model, glm::vec3(modelAspect, modelAspect, modelAspect));
+    transformColor = glm::mat4(1.0f);
+    transformColor = glm::scale(transformColor, glm::vec3(0.39f, 0.0f, 0.39f));
+
+    glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+    glUniformMatrix4fv(transformColorLoc, 1, GL_FALSE, glm::value_ptr(transformColor));
+    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
 
     SwapBuffers(ghDC);
 }

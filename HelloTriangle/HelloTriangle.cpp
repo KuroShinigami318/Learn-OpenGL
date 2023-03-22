@@ -53,6 +53,7 @@ bool isDown = false;
 unsigned int shaderProgram;
 unsigned int VBO, VAO, EBO, internalFormat;
 unsigned int texture;
+unsigned int viewLoc, transformColorLoc, modelLoc;
 GLfloat latitude, longitude, latinc, longinc;
 GLdouble radius;
 
@@ -404,6 +405,9 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
+    viewLoc = glGetUniformLocation(shaderProgram, "view");
+    modelLoc = glGetUniformLocation(shaderProgram, "model");
+    transformColorLoc = glGetUniformLocation(shaderProgram, "u_transform_color");
     // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
     // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
     //glBindVertexArray(0);
@@ -721,7 +725,7 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
     float camX = static_cast<float>(sin(timer.GetTotalSeconds()) * radius);
     float camZ = static_cast<float>(cos(timer.GetTotalSeconds()) * radius);
     view = glm::lookAt(glm::vec3(camX, 0.0f, camZ), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-    unsigned int viewLoc = glGetUniformLocation(shaderProgram, "view");
+
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
 
     // create transformations
@@ -746,8 +750,6 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
     //transform = glm::rotate(transform, (float)timer.GetTotalSeconds(), glm::vec3(0.0, 1.0, 0.0));
     transformColor = glm::scale(transformColor, glm::vec3(scale, scale, scale));
     // draw our first triangle
-    unsigned int modelLoc = glGetUniformLocation(shaderProgram, "model");
-    unsigned int transformColorLoc = glGetUniformLocation(shaderProgram, "u_transform_color");
     glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
     glUniformMatrix4fv(transformColorLoc, 1, GL_FALSE, glm::value_ptr(transformColor));
     //glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized

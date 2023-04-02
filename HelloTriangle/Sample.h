@@ -30,6 +30,8 @@ public:
 
 	void ResetCallbackRenderThread(const GLsizei& ctxWidth, const GLsizei& ctxHeight);
 
+	bool IsAny(int value, std::vector<int> list);
+
 private:
 	void Update(DX::StepTimer const& timer);
 

@@ -16,6 +16,15 @@
 
 #define MAX_LOADSTRING 100
 
+enum class VKEY
+{
+    UP,
+    DOWN,
+    LEFT,
+    RIGHT,
+    ALT,
+};
+
 // Global Variables:
 HINSTANCE hInst;                                // current instance
 WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
@@ -26,17 +35,15 @@ GLsizei m_ctxWidth, m_ctxHeight;
 std::shared_ptr<Sample*> g_sample;
 std::mutex m_mutex;
 std::condition_variable cv;
-bool m_isWaiting;
 std::unique_ptr<utils::WorkerThread<void()>> registerNotify;
 std::unique_ptr<utils::WorkerThread<void()>> processLifeCycle;
-utils::WorkerThread<double()> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, 50, true, 5);
-bool isSignalSuspend;
+utils::WorkerThread<double()> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, 50, true, 4);
 HANDLE g_plmSuspendComplete = nullptr;
 HANDLE g_plmSignalResume = nullptr;
 PAPPSTATE_REGISTRATION hPLM = {};
-bool m_isExiting;
-bool m_isInitDone;
-bool m_isPause;
+bool m_isExiting, m_isInitDone, m_isPause, isSignalSuspend, m_isWaiting;
+bool firstMouse = true;
+std::unordered_map<VKEY, bool> isKeyPressed;
 
 #define BLACK_INDEX     0 
 #define RED_INDEX       13 
@@ -54,12 +61,18 @@ unsigned int shaderProgram;
 unsigned int VBO, VAO, EBO, internalFormat;
 unsigned int texture;
 unsigned int viewLoc, transformColorLoc, modelLoc;
-GLfloat latitude, longitude, latinc, longinc;
+glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
+glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
+glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+glm::vec3 cameraDirect = glm::vec3(0.0f, 0.0f, 0.0f);
+GLfloat latitude, longitude, latinc, longinc, fov, lastX, lastY;
+float yaw = -90.0f;	// yaw is initialized to -90.0 degrees since a yaw of 0.0 results in a direction vector pointing to the right so we initially rotate a bit to the left.
+float pitch = 0.0f;
 GLdouble radius;
 
 #define GLOBE    1 
 #define CYLINDER 2 
-#define CONE     3 
+#define CONE     3
 
 const char* vertexShaderSource = "#version 460 core\n"
 "layout (location = 0) in vec3 aPos;\n"
@@ -86,7 +99,7 @@ const char* fragmentShaderSource = "#version 460 core\n"
 "void main()\n"
 "{\n"
 //"   FragColor = texture(ourTexture, TexCoord);\n"
-"   FragColor = transform_color * vec4(1.0);\n"
+"   FragColor = transform_color * vec4(1.0f);\n"
 "}\n\0";
 
 // Forward declarations of functions included in this code module:
@@ -137,7 +150,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             {
                 if (m_isExiting)
                 {
-                    utils::Log::e("UpdateThreadLoop", std::format("m_isExiting={}, should not be occured here!!!", m_isExiting).c_str());
+                    utils::Log::e("UpdateThreadLoop", FORMAT("m_isExiting={}, should not be occured here!!!", m_isExiting));
                     break;
                 }
                 (*g_sample)->GetThread()->Pause(false);
@@ -398,7 +411,10 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 
     // pass projection matrix to shader (as projection matrix rarely changes there's no need to do this per frame)
     // -----------------------------------------------------------------------------------------------------------
-    glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)ctxWidth / (float)ctxHeight, 0.1f, 100.0f);
+    fov = 45.0f;
+    lastX = ctxWidth / 2.0f;
+    lastY = ctxHeight / 2.0f;
+    glm::mat4 projection = glm::perspective(glm::radians(fov), (float)ctxWidth / (float)ctxHeight, 0.1f, 100.0f);
     glUseProgram(shaderProgram);
     unsigned int projectionLoc = glGetUniformLocation(shaderProgram, "projection");
     glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projection));
@@ -520,6 +536,167 @@ double Calc_pi_MT(int n)
     return result;
 }
 
+double Move(VKEY move)
+{
+    return [&](VKEY move) -> double {
+        float deltaTime = 0;
+        float cameraSpeed = 0;
+        float k_speed = 2.5f;
+        while (!m_isExiting && isKeyPressed[move])
+        {
+            m_mutex.lock();
+            deltaTime = (*g_sample)->GetTimer().GetElapsedSeconds();
+            cameraSpeed = k_speed * deltaTime;
+            switch (move)
+            {
+            case VKEY::UP:
+                cameraPos += cameraSpeed * cameraFront;
+                cameraDirect = cameraPos + cameraFront;
+            break;
+            case VKEY::LEFT:
+                cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+                cameraDirect = cameraPos + cameraFront;
+            break;
+            case VKEY::DOWN:
+                cameraPos -= cameraSpeed * cameraFront;
+                cameraDirect = cameraPos + cameraFront;
+            break;
+            case VKEY::RIGHT:
+                cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+                cameraDirect = cameraPos + cameraFront;
+            break;
+            }
+            m_mutex.unlock();
+            Sleep(cameraSpeed * 1000);
+        }
+        return 0;
+    }(move);
+}
+
+void SetMiddleCursorPos(HWND hWnd)
+{
+    RECT rect;
+    POINT ptClientUL;              // client upper left corner 
+    POINT ptClientLR;              // client lower right corner
+    GetClientRect(hWnd, &rect);
+    ptClientUL.x = rect.left;
+    ptClientUL.y = rect.top;
+    // Add one to the right and bottom sides, because the 
+    // coordinates retrieved by GetClientRect do not 
+    // include the far left and lowermost pixels.
+    ptClientLR.x = rect.right + 1;
+    ptClientLR.y = rect.bottom + 1;
+    ClientToScreen(hWnd, &ptClientUL);
+    ClientToScreen(hWnd, &ptClientLR);
+    // Copy the client coordinates of the client area 
+    // to the rcClient structure. Confine the mouse cursor 
+    // to the client area by passing the rcClient structure 
+    // to the ClipCursor function.
+    SetRect(&rect, ptClientUL.x, ptClientUL.y,
+        ptClientLR.x, ptClientLR.y);
+    SetCursorPos(rect.left + (m_ctxWidth / 2), rect.top + (m_ctxHeight / 2));
+}
+
+void LockCursor(bool i_isLock, HWND hWnd)
+{
+    if (i_isLock)
+    {
+        RECT rect;
+        POINT ptClientUL;              // client upper left corner 
+        POINT ptClientLR;              // client lower right corner
+        // Capture mouse input.
+        SetCapture(hWnd);
+        ShowCursor(false);
+        // Retrieve the screen coordinates of the client area, 
+        // and convert them into client coordinates. 
+        GetClientRect(hWnd, &rect);
+        ptClientUL.x = rect.left;
+        ptClientUL.y = rect.top;
+        // Add one to the right and bottom sides, because the 
+        // coordinates retrieved by GetClientRect do not 
+        // include the far left and lowermost pixels.
+        ptClientLR.x = rect.right + 1;
+        ptClientLR.y = rect.bottom + 1;
+        ClientToScreen(hWnd, &ptClientUL);
+        ClientToScreen(hWnd, &ptClientLR);
+        // Copy the client coordinates of the client area 
+        // to the rcClient structure. Confine the mouse cursor 
+        // to the client area by passing the rcClient structure 
+        // to the ClipCursor function.
+        SetRect(&rect, ptClientUL.x, ptClientUL.y,
+            ptClientLR.x, ptClientLR.y);
+        SetCursorPos(rect.left + (m_ctxWidth / 2), rect.top + (m_ctxHeight / 2));
+        ClipCursor(&rect);
+    }
+    else
+    {
+        ClipCursor(NULL);
+        ShowCursor(true);
+        ReleaseCapture();
+    }
+}
+
+void MouseCallback(HWND hWnd, double i_xpos, double i_ypos)
+{
+    /*if (cameraDirect == glm::vec3(0.0f, 0.0f, 0.0f))
+    {
+        return;
+    }*/
+    float xpos = static_cast<float>(i_xpos);
+    float ypos = static_cast<float>(i_ypos);
+
+    POINT pCursor;
+    if (xpos ==0 || ypos == 0 || xpos == m_ctxWidth || ypos == m_ctxHeight)
+    {
+        SetMiddleCursorPos(hWnd);
+        firstMouse = true;
+        return;
+    }
+
+    if (firstMouse)
+    {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
+    }
+    DEBUG_LOG("xpos: {}, ypos: {}, lastX: {}, lastY: {}", xpos, ypos, lastX, lastY);
+
+    float xoffset = xpos - lastX;
+    float yoffset = lastY - ypos;
+    lastX = xpos;
+    lastY = ypos;
+
+    float sensitivity = 0.1f;
+    xoffset *= sensitivity;
+    yoffset *= sensitivity;
+
+    DEBUG_LOG("xoffset: {}, yoffset: {}", xoffset, yoffset);
+
+    yaw += xoffset;
+    pitch += yoffset;
+
+    if (pitch > 89.0f)
+        pitch = 89.0f;
+    if (pitch < -89.0f)
+        pitch = -89.0f;
+    DEBUG_LOG("yaw: {}, pitch: {}", yaw, pitch);
+    glm::vec3 direction;
+    direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+    direction.y = sin(glm::radians(pitch));
+    direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+    cameraFront = glm::normalize(direction);
+    cameraDirect = cameraPos + cameraFront;
+}
+
+void ScrollCallback(HWND hWnd, double xoffset, double yoffset)
+{
+    fov -= (float)yoffset;
+    if (fov < 1.0f)
+        fov = 1.0f;
+    if (fov > 45.0f)
+        fov = 45.0f;
+}
+
 //
 //  FUNCTION: WndProc(HWND, UINT, WPARAM, LPARAM)
 //
@@ -575,8 +752,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 t.CreateWorkerThread([&]() {
                     utils::Log::d("Debug", "Meter Performance");
                     double result = Calc_pi_MT(1E9);
-                    utils::Log::d("Debug", std::format("test: {}", result).c_str());
-                    MessageBoxA(0, std::format("Pi: {}", result).c_str(), "Result", MB_SERVICE_NOTIFICATION);
+                    DEBUG_LOG("test: {}", result);
+                    MessageBoxA(0, FORMAT("Pi: {}", result), "Result", MB_SERVICE_NOTIFICATION);
                     m_isWaiting = false;
                     });
                 t.Detach();
@@ -585,14 +762,100 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
         case IDM_PAUSE:
         {
-            m_isPause = !(*g_sample)->GetThread()->IsPaused();
-            (*g_sample)->GetThread()->Pause(m_isPause);
+            /*m_isPause = !(*g_sample)->GetThread()->IsPaused();
+            (*g_sample)->GetThread()->Pause(m_isPause);*/
         }
         default:
             return DefWindowProc(hWnd, message, wParam, lParam);
         }
     }
     break;
+    case WM_MOUSEMOVE:
+        POINTS posCursor = MAKEPOINTS(lParam);
+        MouseCallback(hWnd, posCursor.x, posCursor.y);
+    break;
+    case WM_MOUSEWHEEL:
+        POINTS posWheel = MAKEPOINTS(lParam);
+        ScrollCallback(hWnd, posWheel.x, posWheel.y);
+    break;
+    case WM_KEYDOWN:
+        if ((*g_sample)->IsAny(wParam, { 0x57, VK_UP }))
+        {
+            if (!isKeyPressed[VKEY::UP])
+            {
+                cameraFront = cameraDirect - cameraPos;
+                calcThread.PushCallback(Move, VKEY::UP);
+                isKeyPressed[VKEY::UP] = true;
+                calcThread.Dispatch();
+            }
+        }
+        if ((*g_sample)->IsAny(wParam, { 0x41, VK_LEFT }))
+        {
+            if (!isKeyPressed[VKEY::LEFT])
+            {
+                cameraFront = cameraDirect - cameraPos;
+                calcThread.PushCallback(Move, VKEY::LEFT);
+                isKeyPressed[VKEY::LEFT] = true;
+                calcThread.Dispatch();
+            }
+        }
+        if ((*g_sample)->IsAny(wParam, { 0x53, VK_DOWN }))
+        {
+            if (!isKeyPressed[VKEY::DOWN])
+            {
+                cameraFront = cameraDirect - cameraPos;
+                calcThread.PushCallback(Move, VKEY::DOWN);
+                isKeyPressed[VKEY::DOWN] = true;
+                calcThread.Dispatch();
+            }
+        }
+        if ((*g_sample)->IsAny(wParam, { 0x44, VK_RIGHT }))
+        {
+            if (!isKeyPressed[VKEY::RIGHT])
+            {
+                cameraFront = cameraDirect - cameraPos;
+                calcThread.PushCallback(Move, VKEY::RIGHT);
+                isKeyPressed[VKEY::RIGHT] = true;
+                calcThread.Dispatch();
+            }
+        }
+    break;
+    case WM_KEYUP:
+        if ((*g_sample)->IsAny(wParam, { 0x57, VK_UP }))
+        {
+            isKeyPressed[VKEY::UP] = false;
+            calcThread.CleanResults();
+        }
+        if ((*g_sample)->IsAny(wParam, { 0x41, VK_LEFT }))
+        {
+            isKeyPressed[VKEY::LEFT] = false;
+            calcThread.CleanResults();
+        }
+        if ((*g_sample)->IsAny(wParam, { 0x53, VK_DOWN }))
+        {
+            isKeyPressed[VKEY::DOWN] = false;
+            calcThread.CleanResults();
+        }
+        if ((*g_sample)->IsAny(wParam, { 0x44, VK_RIGHT }))
+        {
+            isKeyPressed[VKEY::RIGHT] = false;
+            calcThread.CleanResults();
+        }
+    break;
+    case WM_SYSKEYDOWN:
+        if (wParam == VK_MENU && !isKeyPressed[VKEY::ALT])
+        {
+            isKeyPressed[VKEY::ALT] = true;
+            LockCursor(false, hWnd);
+        }
+    break;
+    case WM_SYSKEYUP:
+        if (wParam == VK_MENU)
+        {
+            isKeyPressed[VKEY::ALT] = false;
+            LockCursor(true, hWnd);
+        }
+        break;
     case WM_PAINT:
     {
         PAINTSTRUCT ps;
@@ -614,6 +877,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     break;
     case WM_ACTIVATEAPP:
     {
+        LockCursor(wParam, hWnd);
         registerNotify->PushCallback([&](WPARAM wParam) {
             if (!m_isExiting)
             {
@@ -721,10 +985,15 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
 
     // camera/view transformation
     glm::mat4 view = glm::mat4(1.0f); // make sure to initialize matrix to identity matrix first
-    float radius = 5.0f;
-    float camX = static_cast<float>(sin(timer.GetTotalSeconds()) * radius);
-    float camZ = static_cast<float>(cos(timer.GetTotalSeconds()) * radius);
-    view = glm::lookAt(glm::vec3(camX, 0.0f, camZ), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    if (cameraDirect == glm::vec3(0.0f, 0.0f, 0.0f))
+    {
+        float radius = 5.0f;
+        float camX = static_cast<float>(sin(timer.GetTotalSeconds()) * radius);
+        float camZ = static_cast<float>(cos(timer.GetTotalSeconds()) * radius);
+        cameraPos = glm::vec3(camX, 0.0f, camZ);
+        cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+    }
+    view = glm::lookAt(cameraPos, cameraDirect, cameraUp);
 
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
 

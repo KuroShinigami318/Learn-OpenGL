@@ -31,7 +31,7 @@ void Sample::Tick(const GLsizei& ctxWidth, const GLsizei& ctxHeight)
 
 void Sample::Update(DX::StepTimer const&)
 {
-	//utils::Log::i("Sample::Update", std::format("Get FPS: {}", m_timer.GetFramesPerSecond()).c_str());
+	//utils::Log::i("Sample::Update", FORMAT("Get FPS: {}", m_timer.GetFramesPerSecond()));
 }
 
 void Sample::OnSuspending()
@@ -58,6 +58,11 @@ void Sample::ResetCallbackRenderThread(const GLsizei& ctxWidth, const GLsizei& c
 	utils::WorkerThreadERR result = renderThread->PushCallback(&Sample::Tick, this, ctxWidth, ctxHeight);
 	if (result != utils::WorkerThreadERR::SUCCESSS)
 	{
-		utils::Log::e("Sample::ResetCallbackRenderThread", std::format("Error in pushing callback to render thread with error code [{}]", utils::WorkerThreadERRCode[(int)result]).c_str());
+		utils::Log::e("Sample::ResetCallbackRenderThread", FORMAT("Error in pushing callback to render thread with error code [{}]", utils::WorkerThreadERRCode[(int)result]));
 	}
+}
+
+bool Sample::IsAny(int value, std::vector<int> list)
+{
+	return utils::Contains(value, list);
 }

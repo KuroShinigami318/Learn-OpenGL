@@ -37,6 +37,7 @@ private:
 
 	// Rendering loop timer.
 	uint64_t                                    m_frame;
+	float										m_preUpdateTime;
 	DX::StepTimer                               m_timer;
 	// Render Thread
 	std::shared_ptr<utils::WorkerThread<void()>> renderThread;

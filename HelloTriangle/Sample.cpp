@@ -31,7 +31,11 @@ void Sample::Tick(const GLsizei& ctxWidth, const GLsizei& ctxHeight)
 
 void Sample::Update(DX::StepTimer const&)
 {
-	//utils::Log::i("Sample::Update", FORMAT("Get FPS: {}", m_timer.GetFramesPerSecond()));
+	if (m_timer.GetTotalSeconds() - m_preUpdateTime > 5)
+	{
+		utils::Log::i("Sample::Update", FORMAT("Get FPS: {}", m_timer.GetFramesPerSecond()));
+		m_preUpdateTime = m_timer.GetTotalSeconds();
+	}
 }
 
 void Sample::OnSuspending()

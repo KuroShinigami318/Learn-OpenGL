@@ -18,13 +18,24 @@
 
 enum class VKEY
 {
+    _BEGIN,
     UP,
     DOWN,
     LEFT,
     RIGHT,
     ALT,
     SHIFT,
+    _END
 };
+
+VKEY& operator ++ (VKEY& e)
+{
+    if (e == VKEY::_END) {
+        throw std::out_of_range("Out of range VKEY");
+    }
+    e = VKEY(static_cast<std::underlying_type<VKEY>::type>(e) + 1);
+    return e;
+}
 
 // Global Variables:
 HINSTANCE hInst;                                // current instance
@@ -146,6 +157,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                 if (!m_isPause)
                 {
                     (*g_sample)->OnResuming();
+                    for (VKEY iterKey = VKEY::_BEGIN; iterKey != VKEY::_END; ++iterKey)
+                    {
+                        isKeyPressed[iterKey] = false;
+                    }
                 }
             }
 
@@ -546,52 +561,59 @@ double Move(VKEY move)
         float deltaTime = 0;
         float cameraSpeed = 0;
         float timeSleep = 0;
-        float speed = k_speed;
         auto currentTP = std::chrono::system_clock::now();
         auto preUpdateTP = currentTP;
         std::chrono::duration<double> elapsed_seconds = currentTP - preUpdateTP;
         while (!m_isExiting && isKeyPressed[move])
         {
-            if (isKeyPressed[VKEY::SHIFT] && move == VKEY::UP)
-            {
-                speed = 2.5 * k_speed;
-            }
-            else
-            {
-                speed = k_speed;
-            }
-            m_mutex.lock();
             deltaTime = (*g_sample)->GetTimer().GetElapsedSeconds();
-            cameraSpeed = speed * deltaTime;
             currentTP = std::chrono::system_clock::now();
             elapsed_seconds = currentTP - preUpdateTP;
             if (elapsed_seconds.count() < deltaTime)
             {
-                m_mutex.unlock();
                 continue;
             }
             preUpdateTP = currentTP;
+            cameraSpeed = k_speed * deltaTime;
             switch (move)
             {
             case VKEY::UP:
+                if (isKeyPressed[VKEY::SHIFT] && !(isKeyPressed[VKEY::LEFT] || isKeyPressed[VKEY::RIGHT]))
+                {
+                    cameraSpeed = 2.5 * k_speed * deltaTime;
+                }
+                if (isKeyPressed[VKEY::DOWN])
+                {
+                    cameraSpeed = 0;
+                }
                 cameraPos += cameraSpeed * cameraFront;
                 cameraDirect = cameraPos + cameraFront;
             break;
             case VKEY::LEFT:
+                if (isKeyPressed[VKEY::RIGHT])
+                {
+                    cameraSpeed = 0;
+                }
                 cameraPos -= Right * cameraSpeed;
                 cameraDirect = cameraPos + cameraFront;
             break;
             case VKEY::DOWN:
+                if (isKeyPressed[VKEY::UP])
+                {
+                    cameraSpeed = 0;
+                }
                 cameraPos -= cameraSpeed * cameraFront;
                 cameraDirect = cameraPos + cameraFront;
             break;
             case VKEY::RIGHT:
+                if (isKeyPressed[VKEY::LEFT])
+                {
+                    cameraSpeed = 0;
+                }
                 cameraPos += Right * cameraSpeed;
                 cameraDirect = cameraPos + cameraFront;
             break;
             }
-            m_mutex.unlock();
-            DEBUG_LOG("delta time: {}", deltaTime);
         }
         return 0;
     }(move);
@@ -718,6 +740,7 @@ void ScrollCallback(HWND hWnd, double xoffset, double yoffset)
         fov = 1.0f;
     if (fov > 45.0f)
         fov = 45.0f;
+    DEBUG_LOG("fov: {}, yoffset: {}", fov, yoffset);
 }
 
 //
@@ -909,7 +932,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     break;
     case WM_ACTIVATEAPP:
     {
-        LockCursor(wParam, hWnd);
+        if (wParam)
+        {
+            LockCursor(true, hWnd);
+        }
+        else if (!isKeyPressed[VKEY::ALT])
+        {
+            LockCursor(false, hWnd);
+        }
         registerNotify->PushCallback([&](WPARAM wParam) {
             if (!m_isExiting)
             {

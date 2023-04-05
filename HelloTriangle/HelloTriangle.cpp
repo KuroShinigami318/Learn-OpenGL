@@ -23,6 +23,7 @@ enum class VKEY
     LEFT,
     RIGHT,
     ALT,
+    SHIFT,
 };
 
 // Global Variables:
@@ -65,7 +66,10 @@ glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
 glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
 glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
 glm::vec3 cameraDirect = glm::vec3(0.0f, 0.0f, 0.0f);
+glm::vec3 Right;
+glm::vec3 WorldUp = cameraUp;
 GLfloat latitude, longitude, latinc, longinc, fov, lastX, lastY;
+float k_speed = 1.0f;
 float yaw = -90.0f;	// yaw is initialized to -90.0 degrees since a yaw of 0.0 results in a direction vector pointing to the right so we initially rotate a bit to the left.
 float pitch = 0.0f;
 GLdouble radius;
@@ -541,12 +545,22 @@ double Move(VKEY move)
     return [&](VKEY move) -> double {
         float deltaTime = 0;
         float cameraSpeed = 0;
-        float k_speed = 2.5f;
+        float timeSleep = 0;
+        float speed = k_speed;
         while (!m_isExiting && isKeyPressed[move])
         {
+            if (isKeyPressed[VKEY::SHIFT] && move == VKEY::UP)
+            {
+                speed = 2.5 * k_speed;
+            }
+            else
+            {
+                speed = k_speed;
+            }
             m_mutex.lock();
             deltaTime = (*g_sample)->GetTimer().GetElapsedSeconds();
-            cameraSpeed = k_speed * deltaTime;
+            cameraSpeed = speed * deltaTime;
+            timeSleep = deltaTime * 1000;
             switch (move)
             {
             case VKEY::UP:
@@ -554,7 +568,7 @@ double Move(VKEY move)
                 cameraDirect = cameraPos + cameraFront;
             break;
             case VKEY::LEFT:
-                cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+                cameraPos -= Right * cameraSpeed;
                 cameraDirect = cameraPos + cameraFront;
             break;
             case VKEY::DOWN:
@@ -562,12 +576,13 @@ double Move(VKEY move)
                 cameraDirect = cameraPos + cameraFront;
             break;
             case VKEY::RIGHT:
-                cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+                cameraPos += Right * cameraSpeed;
                 cameraDirect = cameraPos + cameraFront;
             break;
             }
             m_mutex.unlock();
-            Sleep(cameraSpeed * 1000);
+            DEBUG_LOG("delta time: {}", deltaTime);
+            Sleep(timeSleep);
         }
         return 0;
     }(move);
@@ -625,7 +640,6 @@ void LockCursor(bool i_isLock, HWND hWnd)
         // to the ClipCursor function.
         SetRect(&rect, ptClientUL.x, ptClientUL.y,
             ptClientLR.x, ptClientLR.y);
-        SetCursorPos(rect.left + (m_ctxWidth / 2), rect.top + (m_ctxHeight / 2));
         ClipCursor(&rect);
     }
     else
@@ -659,7 +673,6 @@ void MouseCallback(HWND hWnd, double i_xpos, double i_ypos)
         lastY = ypos;
         firstMouse = false;
     }
-    DEBUG_LOG("xpos: {}, ypos: {}, lastX: {}, lastY: {}", xpos, ypos, lastX, lastY);
 
     float xoffset = xpos - lastX;
     float yoffset = lastY - ypos;
@@ -670,7 +683,6 @@ void MouseCallback(HWND hWnd, double i_xpos, double i_ypos)
     xoffset *= sensitivity;
     yoffset *= sensitivity;
 
-    DEBUG_LOG("xoffset: {}, yoffset: {}", xoffset, yoffset);
 
     yaw += xoffset;
     pitch += yoffset;
@@ -679,13 +691,15 @@ void MouseCallback(HWND hWnd, double i_xpos, double i_ypos)
         pitch = 89.0f;
     if (pitch < -89.0f)
         pitch = -89.0f;
-    DEBUG_LOG("yaw: {}, pitch: {}", yaw, pitch);
     glm::vec3 direction;
     direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
     direction.y = sin(glm::radians(pitch));
     direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
     cameraFront = glm::normalize(direction);
     cameraDirect = cameraPos + cameraFront;
+    // also re-calculate the Right and Up vector
+    Right = glm::normalize(glm::cross(cameraFront, WorldUp));  // normalize the vectors, because their length gets closer to 0 the more you look up or down which results in slower movement.
+    cameraUp = glm::normalize(glm::cross(Right, cameraFront));
 }
 
 void ScrollCallback(HWND hWnd, double xoffset, double yoffset)
@@ -819,6 +833,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 calcThread.Dispatch();
             }
         }
+        if (wParam == VK_SHIFT && !isKeyPressed[VKEY::RIGHT])
+        {
+
+            isKeyPressed[VKEY::SHIFT] = true;
+        }
     break;
     case WM_KEYUP:
         if ((*g_sample)->IsAny(wParam, { 0x57, VK_UP }))
@@ -840,6 +859,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
             isKeyPressed[VKEY::RIGHT] = false;
             calcThread.CleanResults();
+        }
+        if (wParam == VK_SHIFT)
+        {
+            isKeyPressed[VKEY::SHIFT] = false;
         }
     break;
     case WM_SYSKEYDOWN:

@@ -547,6 +547,9 @@ double Move(VKEY move)
         float cameraSpeed = 0;
         float timeSleep = 0;
         float speed = k_speed;
+        auto currentTP = std::chrono::system_clock::now();
+        auto preUpdateTP = currentTP;
+        std::chrono::duration<double> elapsed_seconds = currentTP - preUpdateTP;
         while (!m_isExiting && isKeyPressed[move])
         {
             if (isKeyPressed[VKEY::SHIFT] && move == VKEY::UP)
@@ -560,7 +563,14 @@ double Move(VKEY move)
             m_mutex.lock();
             deltaTime = (*g_sample)->GetTimer().GetElapsedSeconds();
             cameraSpeed = speed * deltaTime;
-            timeSleep = deltaTime * 1000;
+            currentTP = std::chrono::system_clock::now();
+            elapsed_seconds = currentTP - preUpdateTP;
+            if (elapsed_seconds.count() < deltaTime)
+            {
+                m_mutex.unlock();
+                continue;
+            }
+            preUpdateTP = currentTP;
             switch (move)
             {
             case VKEY::UP:
@@ -582,7 +592,6 @@ double Move(VKEY move)
             }
             m_mutex.unlock();
             DEBUG_LOG("delta time: {}", deltaTime);
-            Sleep(timeSleep);
         }
         return 0;
     }(move);

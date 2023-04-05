@@ -934,6 +934,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         if (wParam)
         {
+            isKeyPressed[VKEY::ALT] = false;
             LockCursor(true, hWnd);
         }
         else if (!isKeyPressed[VKEY::ALT])

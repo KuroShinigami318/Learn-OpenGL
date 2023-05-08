@@ -7,6 +7,7 @@ extern GLvoid drawScene(DX::StepTimer const& timer, const GLsizei& ctxWidth, con
 Sample::Sample() : m_frame(0)
 {
 	renderThread = std::make_shared<utils::WorkerThread<void()>>(false, "Render Thread");
+	SetFixedFPS(144);
 }
 
 Sample::~Sample()
@@ -31,10 +32,11 @@ void Sample::Tick(const GLsizei& ctxWidth, const GLsizei& ctxHeight)
 
 void Sample::Update(DX::StepTimer const&)
 {
-	if (m_timer.GetTotalSeconds() - m_preUpdateTime > 5)
+	if (m_timer.GetTotalSeconds() - m_preUpdateTime > 1)
 	{
-		utils::Log::i("Sample::Update", FORMAT("Get FPS: {}", m_timer.GetFramesPerSecond()));
+		//utils::Log::i("Sample::Update", FORMAT("Get FPS: {}", m_timer.GetFramesPerSecond()));
 		m_preUpdateTime = m_timer.GetTotalSeconds();
+		m_lastFrame = m_frame;
 	}
 }
 
@@ -69,4 +71,10 @@ void Sample::ResetCallbackRenderThread(const GLsizei& ctxWidth, const GLsizei& c
 bool Sample::IsAny(int value, std::vector<int> list)
 {
 	return utils::Contains(value, list);
+}
+
+void Sample::SetFixedFPS(short i_fps)
+{
+	m_timer.SetFixedTimeStep(true);
+	m_timer.SetTargetElapsedTicks(m_timer.TicksPerSecond / i_fps);
 }

@@ -32,11 +32,14 @@ public:
 
 	bool IsAny(int value, std::vector<int> list);
 
+	void SetFixedFPS(short i_fps);
+
 private:
 	void Update(DX::StepTimer const& timer);
 
 	// Rendering loop timer.
 	uint64_t                                    m_frame;
+	uint64_t                                    m_lastFrame;
 	float										m_preUpdateTime;
 	DX::StepTimer                               m_timer;
 	// Render Thread

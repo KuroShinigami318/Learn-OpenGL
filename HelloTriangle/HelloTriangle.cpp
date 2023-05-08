@@ -25,6 +25,7 @@ enum class VKEY
     RIGHT,
     ALT,
     SHIFT,
+    LIGHTING,
     _END
 };
 
@@ -36,6 +37,13 @@ VKEY& operator ++ (VKEY& e)
     e = VKEY(static_cast<std::underlying_type<VKEY>::type>(e) + 1);
     return e;
 }
+
+// Mapping VKey Controller
+std::unordered_multimap<VKEY, int> key_mapping;
+
+using unordered_multimap_citer = std::unordered_multimap<VKEY, int>::const_iterator;
+using unordered_multimap_iter = std::unordered_multimap<VKEY, int>::iterator;
+using key_pair = std::pair<unordered_multimap_citer, unordered_multimap_citer>;
 
 // Global Variables:
 HINSTANCE hInst;                                // current instance
@@ -71,12 +79,17 @@ int up = initial_up;
 bool isDown = false;
 unsigned int shaderProgram;
 unsigned int VBO, VAO, EBO, internalFormat;
+unsigned int lightCubeVAO;
 unsigned int texture;
-unsigned int viewLoc, transformColorLoc, modelLoc;
+unsigned int viewLoc, modelLoc, projectionLoc, lightPosLoc, lightColorLoc, objectColorLoc;
+// camera
 glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
 glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
 glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
 glm::vec3 cameraDirect = glm::vec3(0.0f, 0.0f, 0.0f);
+// lighting
+glm::vec3 lightPos(1.0f, 1.0f, 1.0f);
+glm::vec3 lightColor = glm::vec3(1.0f);
 glm::vec3 Right;
 glm::vec3 WorldUp = cameraUp;
 GLfloat latitude, longitude, latinc, longinc, fov, lastX, lastY;
@@ -91,30 +104,44 @@ GLdouble radius;
 
 const char* vertexShaderSource = "#version 460 core\n"
 "layout (location = 0) in vec3 aPos;\n"
-//"layout (location = 1) in vec2 aTexCoord;\n"
-"uniform mat4 transform;\n"
-"uniform mat4 u_transform_color;\n"
+"layout (location = 1) in vec3 aNormal;\n"
+//"layout (location = 2) in vec2 aTexCoord;\n"
 "uniform mat4 model;\n"
 "uniform mat4 view;\n"
 "uniform mat4 projection;\n"
-"out mat4 transform_color;\n"
+"out vec3 FragPos;\n"
+"out vec3 Normal;\n"
 //"out vec2 TexCoord;\n"
 "void main()\n"
 "{\n"
-"   gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
-"   transform_color = u_transform_color;\n"
+"   FragPos = vec3(model * vec4(aPos, 1.0));\n"
+"   Normal = aNormal;\n"
+"   gl_Position = projection * view * vec4(FragPos, 1.0);\n"
 //"   TexCoord = aTexCoord;\n"
-"}\0";
+"}\n\0";
 
 const char* fragmentShaderSource = "#version 460 core\n"
 "out vec4 FragColor;\n"
-"in mat4 transform_color;\n"
+"in vec3 Normal;\n"
+"in vec3 FragPos;\n"
+"uniform vec3 lightPos;\n"
+"uniform vec3 lightColor;\n"
+"uniform vec3 objectColor;\n"
 //"in vec2 TexCoord;\n"
 //"uniform sampler2D ourTexture;"
 "void main()\n"
 "{\n"
 //"   FragColor = texture(ourTexture, TexCoord);\n"
-"   FragColor = transform_color * vec4(1.0f);\n"
+// ambient
+"     float ambientStrength = 0.1;\n"
+"     vec3 ambient = ambientStrength * lightColor;\n"
+// diffuse
+"     vec3 norm = normalize(Normal);\n"
+"     vec3 lightDir = normalize(lightPos - FragPos);\n"
+"     float diff = max(dot(norm, lightDir), 0.0);\n"
+"     vec3 diffuse = diff * lightColor;\n"
+"     vec3 result = (ambient + diffuse) * objectColor;\n"
+"     FragColor = vec4(result, 1.0);\n"
 "}\n\0";
 
 // Forward declarations of functions included in this code module:
@@ -127,6 +154,7 @@ LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 int                 loadOpenGLFunctions();
 void                ExitGame(HWND hWnd);
+GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight);
 GLvoid drawScene(DX::StepTimer const& timer);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -237,6 +265,38 @@ void CleanResource()
     glDeleteProgram(shaderProgram);
 }
 
+void InitKeyController()
+{
+    key_mapping.emplace(VKEY::UP, 0x57);
+    key_mapping.emplace(VKEY::UP, VK_UP);
+    key_mapping.emplace(VKEY::DOWN, 0x53);
+    key_mapping.emplace(VKEY::DOWN, VK_DOWN);
+    key_mapping.emplace(VKEY::LEFT, 0x41);
+    key_mapping.emplace(VKEY::LEFT, VK_LEFT);
+    key_mapping.emplace(VKEY::RIGHT, 0x44);
+    key_mapping.emplace(VKEY::RIGHT, VK_RIGHT);
+    key_mapping.emplace(VKEY::LIGHTING, 0x46);
+    key_mapping.emplace(VKEY::ALT, VK_MENU);
+}
+
+std::vector<int> GetVKeyMapping(VKEY i_vkey)
+{
+    std::vector<int> result;
+    key_pair _key = key_mapping.equal_range(i_vkey);
+    unordered_multimap_citer const_iter = _key.first;
+    for (; const_iter != _key.second; const_iter++)
+    {
+        result.push_back(const_iter->second);
+    }
+    return result;
+}
+
+void SetVKeyMapping(VKEY i_vkey, int i_mapKey)
+{
+    key_mapping.erase(i_vkey);
+    key_mapping.emplace(i_vkey, i_mapKey);
+}
+
 //
 //  FUNCTION: MyRegisterClass()
 //
@@ -288,170 +348,6 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
     return TRUE;
-}
-
-GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
-{
-    m_ctxWidth = ctxWidth;
-    m_ctxHeight = ctxHeight;
-    glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
-    // build and compile our shader program
-    // ------------------------------------
-    // vertex shader
-    unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
-    glCompileShader(vertexShader);
-    // check for shader compile errors
-    int success;
-    char infoLog[512];
-    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
-        utils::Log::e("OPENGLERR", std::format("ERROR::SHADER::VERTEX::COMPILATION_FAILED ", infoLog).c_str());
-    }
-    // fragment shader
-    unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
-    glCompileShader(fragmentShader);
-    // check for shader compile errors
-    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
-    if (!success)
-    {
-        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
-        utils::Log::e("OPENGLERR", std::format("ERROR::SHADER::FRAGMENT::COMPILATION_FAILED ", infoLog).c_str());
-    }
-    // link shaders
-    shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-    // check for linking errors
-    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
-    if (!success) {
-        glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
-        utils::Log::e("OPENGLERR", std::format("ERROR::SHADER::PROGRAM::LINKING_FAILED {}", infoLog).c_str());
-    }
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-
-    // set up vertex data (and buffer(s)) and configure vertex attributes
-    // ------------------------------------------------------------------
-    float vertices[] = {
-        // postions            // texCoords
-         0.5f,  0.5f,  0.5f,    //3.0f, 3.0f,                                         // top right outer
-         0.5f, -0.5f,  0.5f,    //3.0f, 0.0f,                                         // bottom right outer
-        -0.5f, -0.5f,  0.5f,    //0.0f, 0.0f,                                         // bottom left outer
-        -0.5f,  0.5f,  0.5f,    //0.0f, 3.0f,                                         // top left outer
-         0.5f,  0.5f, -0.5f,    //3.0f, 3.0f,                                         // top right inner
-         0.5f, -0.5f, -0.5f,    //3.0f, 0.0f,                                         // bottom right inner
-        -0.5f, -0.5f, -0.5f,    //0.0f, 0.0f,                                         // bottom left inner
-        -0.5f,  0.5f, -0.5f,    //0.0f, 3.0f,                                         // top left inner
-    };
-
-    unsigned int indices[] = {  // note that we start from 0!
-        0, 1, 2,    // first triangle outer
-        2, 3, 0,    // second triangle outer
-        4, 5, 6,    // first triangle inner
-        6, 7, 4,    // second triangle inner
-        0, 3, 4,    // first triangle top
-        4, 7, 3,    // second triangle top
-        1, 2, 5,    // first triangle bottom
-        5, 6, 2,    // second triangle bottom
-        2, 3, 6,    // first triangle left
-        6, 7, 3,    // second triangle left
-        0, 1, 4,    // first triangle right
-        4, 5, 1,    // second triangle right
-    };
-
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
-    glGenBuffers(1, &EBO);
-    // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
-    glBindVertexArray(VAO);
-
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    //glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(0);
-    //glEnableVertexAttribArray(1);
-
-    //glGenTextures(1, &texture);
-    //glActiveTexture(GL_TEXTURE0);
-    //glBindTexture(GL_TEXTURE_2D, texture);
-
-    //// set the texture wrapping parameters
-    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);	// set texture wrapping to GL_REPEAT (default wrapping method)
-    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    //// set texture filtering parameters
-    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    //enum class imageChannel
-    //{
-    //    RGB = 3,
-    //    RGBA
-    //};
-
-    //int width, height, nrChannels, desiredChannel;
-    //stbi_set_flip_vertically_on_load(true);
-    //unsigned char* data = stbi_load("Assets/OK!.png", &width, &height, &nrChannels, 0);
-    //desiredChannel = nrChannels; // format color channels
-    //switch (desiredChannel)
-    //{
-    //case static_cast<int>(imageChannel::RGBA):
-    //{
-    //    internalFormat = GL_RGBA;
-    //}
-    //break;
-    //case static_cast<int>(imageChannel::RGB):
-    //{
-    //    internalFormat = GL_RGB;
-    //}
-    //break;
-    //}
-    //if (data)
-    //{
-    //    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, internalFormat, GL_UNSIGNED_BYTE, data);
-    //    glGenerateMipmap(GL_TEXTURE_2D);
-    //    utils::Log::i("initializeShaderProgram", std::format("width:{}, height:{}, nrChannels:{}", width, height, nrChannels).c_str());
-    //}
-    //else
-    //{
-    //    utils::Log::e("initializeShaderProgram", "Failed to load Texture!!!");
-    //}
-    //// note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
-    //stbi_image_free(data);
-
-    // pass projection matrix to shader (as projection matrix rarely changes there's no need to do this per frame)
-    // -----------------------------------------------------------------------------------------------------------
-    fov = 45.0f;
-    lastX = ctxWidth / 2.0f;
-    lastY = ctxHeight / 2.0f;
-    glm::mat4 projection = glm::perspective(glm::radians(fov), (float)ctxWidth / (float)ctxHeight, 0.1f, 100.0f);
-    glUseProgram(shaderProgram);
-    unsigned int projectionLoc = glGetUniformLocation(shaderProgram, "projection");
-    glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projection));
-
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-    viewLoc = glGetUniformLocation(shaderProgram, "view");
-    modelLoc = glGetUniformLocation(shaderProgram, "model");
-    transformColorLoc = glGetUniformLocation(shaderProgram, "u_transform_color");
-    // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
-    // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
-    //glBindVertexArray(0);
-
-
-    // uncomment this call to draw in wireframe polygons.
-    //glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-
-    StopWaiting();
 }
 
 GLvoid resize(GLsizei width, GLsizei height)
@@ -733,7 +629,7 @@ void MouseCallback(HWND hWnd, double i_xpos, double i_ypos)
     cameraUp = glm::normalize(glm::cross(Right, cameraFront));
 }
 
-void ScrollCallback(HWND hWnd, double xoffset, double yoffset)
+void ScrollCallback(HWND hWnd, double yoffset)
 {
     fov -= (float)yoffset;
     if (fov < 1.0f)
@@ -755,11 +651,13 @@ void ScrollCallback(HWND hWnd, double xoffset, double yoffset)
 //
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    short zDelta = 0;
     RECT rect;
     switch (message)
     {
     case WM_CREATE:
     {
+        InitKeyController();
         ghDC = GetDC(hWnd);
         (*g_sample)->GetThread()->PushCallback(&createGLContext);
         (*g_sample)->GetThread()->RunOneTime(true);
@@ -821,11 +719,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         MouseCallback(hWnd, posCursor.x, posCursor.y);
     break;
     case WM_MOUSEWHEEL:
-        POINTS posWheel = MAKEPOINTS(lParam);
-        ScrollCallback(hWnd, posWheel.x, posWheel.y);
+        zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+        ScrollCallback(hWnd, zDelta);
     break;
     case WM_KEYDOWN:
-        if ((*g_sample)->IsAny(wParam, { 0x57, VK_UP }))
+        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::UP)))
         {
             if (!isKeyPressed[VKEY::UP])
             {
@@ -835,7 +733,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 calcThread.Dispatch();
             }
         }
-        if ((*g_sample)->IsAny(wParam, { 0x41, VK_LEFT }))
+        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::LEFT)))
         {
             if (!isKeyPressed[VKEY::LEFT])
             {
@@ -845,7 +743,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 calcThread.Dispatch();
             }
         }
-        if ((*g_sample)->IsAny(wParam, { 0x53, VK_DOWN }))
+        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::DOWN)))
         {
             if (!isKeyPressed[VKEY::DOWN])
             {
@@ -855,7 +753,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 calcThread.Dispatch();
             }
         }
-        if ((*g_sample)->IsAny(wParam, { 0x44, VK_RIGHT }))
+        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::RIGHT)))
         {
             if (!isKeyPressed[VKEY::RIGHT])
             {
@@ -865,29 +763,28 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 calcThread.Dispatch();
             }
         }
-        if (wParam == VK_SHIFT && !isKeyPressed[VKEY::RIGHT])
+        if (wParam == VK_SHIFT && !isKeyPressed[VKEY::SHIFT])
         {
-
             isKeyPressed[VKEY::SHIFT] = true;
         }
     break;
     case WM_KEYUP:
-        if ((*g_sample)->IsAny(wParam, { 0x57, VK_UP }))
+        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::UP)))
         {
             isKeyPressed[VKEY::UP] = false;
             calcThread.CleanResults();
         }
-        if ((*g_sample)->IsAny(wParam, { 0x41, VK_LEFT }))
+        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::LEFT)))
         {
             isKeyPressed[VKEY::LEFT] = false;
             calcThread.CleanResults();
         }
-        if ((*g_sample)->IsAny(wParam, { 0x53, VK_DOWN }))
+        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::DOWN)))
         {
             isKeyPressed[VKEY::DOWN] = false;
             calcThread.CleanResults();
         }
-        if ((*g_sample)->IsAny(wParam, { 0x44, VK_RIGHT }))
+        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::RIGHT)))
         {
             isKeyPressed[VKEY::RIGHT] = false;
             calcThread.CleanResults();
@@ -895,6 +792,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (wParam == VK_SHIFT)
         {
             isKeyPressed[VKEY::SHIFT] = false;
+        }
+        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::LIGHTING)))
+        {
+            bool isLightOn = lightColor == glm::vec3(1.0f);
+            lightColor = isLightOn ? glm::vec3(0.0f) : glm::vec3(1.0f);
         }
     break;
     case WM_SYSKEYDOWN:
@@ -973,6 +875,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         ExitGame(hWnd);
     }
+    else
+    {
+        LockCursor(true, hWnd);
+    }
     return 0;
     break;
     default:
@@ -1001,15 +907,49 @@ void StopWaiting()
 INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
     UNREFERENCED_PARAMETER(lParam);
+    HWND hwndHot = NULL;
     switch (message)
     {
     case WM_INITDIALOG:
+        isKeyPressed[VKEY::ALT] = false;
+        hwndHot = GetDlgItem(hDlg, IDC_KEYUP);
+        SendMessage(hwndHot, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::UP)[0], 0), 0);
+        hwndHot = GetDlgItem(hDlg, IDC_KEYDOWN);
+        SendMessage(hwndHot, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::DOWN)[0], 0), 0);
+        hwndHot = GetDlgItem(hDlg, IDC_KEYLEFT);
+        SendMessage(hwndHot, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::LEFT)[0], 0), 0);
+        hwndHot = GetDlgItem(hDlg, IDC_KEYRIGHT);
+        SendMessage(hwndHot, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::RIGHT)[0], 0), 0);
+        hwndHot = GetDlgItem(hDlg, IDC_LIGHT);
+        SendMessage(hwndHot, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::LIGHTING)[0], 0), 0);
         return (INT_PTR)TRUE;
 
     case WM_COMMAND:
-        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)
+        switch (LOWORD(wParam))
         {
+        case IDOK:
+            WORD wHotkey;
+            hwndHot = GetDlgItem(hDlg, IDC_KEYUP);
+            wHotkey = (WORD)SendMessage(hwndHot, HKM_GETHOTKEY, 0, 0);
+            SetVKeyMapping(VKEY::UP, wHotkey);
+            hwndHot = GetDlgItem(hDlg, IDC_KEYDOWN);
+            wHotkey = (WORD)SendMessage(hwndHot, HKM_GETHOTKEY, 0, 0);
+            SetVKeyMapping(VKEY::DOWN, wHotkey);
+            hwndHot = GetDlgItem(hDlg, IDC_KEYLEFT);
+            wHotkey = (WORD)SendMessage(hwndHot, HKM_GETHOTKEY, 0, 0);
+            SetVKeyMapping(VKEY::LEFT, wHotkey);
+            hwndHot = GetDlgItem(hDlg, IDC_KEYRIGHT);
+            wHotkey = (WORD)SendMessage(hwndHot, HKM_GETHOTKEY, 0, 0);
+            SetVKeyMapping(VKEY::RIGHT, wHotkey);
+            hwndHot = GetDlgItem(hDlg, IDC_LIGHT);
+            wHotkey = (WORD)SendMessage(hwndHot, HKM_GETHOTKEY, 0, 0);
+            SetVKeyMapping(VKEY::LIGHTING, wHotkey);
             EndDialog(hDlg, LOWORD(wParam));
+            LockCursor(true, GetParent(hDlg));
+            return (INT_PTR)TRUE;
+        case IDCANCEL:
+            EndDialog(hDlg, LOWORD(wParam));
+            LockCursor(true, GetParent(hDlg));
             return (INT_PTR)TRUE;
         }
         break;
@@ -1039,6 +979,7 @@ void ExitGame(HWND hWnd)
 
 GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei const& ctxHeight)
 {
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // bind Texture
@@ -1056,18 +997,21 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
         cameraPos = glm::vec3(camX, 0.0f, camZ);
         cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
     }
+    lightPos = cameraPos;
+
+    glm::mat4 projection = glm::perspective(glm::radians(fov), (float)ctxWidth / (float)ctxHeight, 0.1f, 100.0f);
+    glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projection));
     view = glm::lookAt(cameraPos, cameraDirect, cameraUp);
 
     glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
 
-    // create transformations
     glm::mat4 model = glm::mat4(1.0f);
-    glm::mat4 transformColor = glm::mat4(1.0f);
+    glm::vec3 transformColor = glm::vec3(0.39f, 0.0f, 0.39f);
     // make sure to initialize matrix to identity matrix first
     /*(up < max_scale && !isDown) ? ++up : isDown = true;
     (up > (initial_up) && isDown) ? --up : isDown = false;
     float scale = (up) * ((float) 1 / max_scale);*/
-    float scale = ((sin(timer.GetTotalSeconds()) + 1) * 0.5f * divided) + (1 - (double)divided);
+    //float scale = ((sin(timer.GetTotalSeconds()) + 1) * 0.5f * divided) + (1 - (double)divided);
     /*float ratio = ctxWidth * 1.0f / ctxHeight;
     float new_width = 1.0f, new_height = 1.0f;
     if (ratio > 1)
@@ -1079,26 +1023,246 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
         new_height = ratio;
     }
     transform = glm::scale(transform, glm::vec3(new_width, new_height, 1.0f));*/
-    //transform = glm::rotate(transform, (float)timer.GetTotalSeconds(), glm::vec3(0.0, 1.0, 0.0));
-    transformColor = glm::scale(transformColor, glm::vec3(scale, scale, scale));
-    // draw our first triangle
     glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
-    glUniformMatrix4fv(transformColorLoc, 1, GL_FALSE, glm::value_ptr(transformColor));
-    //glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
-    // calculate the model matrix for each object and pass it to shader before drawing
-    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+    glUniform3fv(objectColorLoc, 1, glm::value_ptr(transformColor));
+    glUniform3fv(lightColorLoc, 1, glm::value_ptr(lightColor));
+    //setup light position
+    glUniform3fv(lightPosLoc, 1, glm::value_ptr(lightPos));
+    // Render cube
+    glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    //glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
     //glBindVertexArray(0); // no need to unbind it every time
 
     //front mini model
     float modelAspect = 0.4;
-    model = glm::translate(model, glm::vec3(2.0f, (modelAspect - 1.0f) / 2, 0.0f));
+    float radius = 2.0f;
+    float miniModelX = static_cast<float>(sin(timer.GetTotalSeconds()) * radius);
+    float miniModelZ = static_cast<float>(cos(timer.GetTotalSeconds()) * radius);
+    model = glm::translate(model, glm::vec3(miniModelX, (modelAspect - 1.0f) / 2, miniModelZ));
     model = glm::scale(model, glm::vec3(modelAspect, modelAspect, modelAspect));
-    transformColor = glm::mat4(1.0f);
-    transformColor = glm::scale(transformColor, glm::vec3(0.39f, 0.0f, 0.39f));
+    glm::vec3 convertToVec3(model[3].x, model[3].y, model[3].z);
+    //lightPos = convertToVec3;
 
     glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
-    glUniformMatrix4fv(transformColorLoc, 1, GL_FALSE, glm::value_ptr(transformColor));
-    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+    glUniform3fv(objectColorLoc, 1, glm::value_ptr(transformColor));
 
+    glBindVertexArray(VAO);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+
+    //glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
     SwapBuffers(ghDC);
+}
+
+GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
+{
+    m_ctxWidth = ctxWidth;
+    m_ctxHeight = ctxHeight;
+    glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+    // build and compile our shader program
+    // ------------------------------------
+    // vertex shader
+    unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
+    glCompileShader(vertexShader);
+    // check for shader compile errors
+    int success;
+    char infoLog[512];
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+        utils::Log::e("OPENGLERR", std::format("ERROR::SHADER::VERTEX::COMPILATION_FAILED ", infoLog).c_str());
+    }
+    // fragment shader
+    unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
+    glCompileShader(fragmentShader);
+    // check for shader compile errors
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+        utils::Log::e("OPENGLERR", std::format("ERROR::SHADER::FRAGMENT::COMPILATION_FAILED ", infoLog).c_str());
+    }
+    // link shaders
+    shaderProgram = glCreateProgram();
+    glAttachShader(shaderProgram, vertexShader);
+    glAttachShader(shaderProgram, fragmentShader);
+    glLinkProgram(shaderProgram);
+    // check for linking errors
+    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
+        utils::Log::e("OPENGLERR", std::format("ERROR::SHADER::PROGRAM::LINKING_FAILED {}", infoLog).c_str());
+    }
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+
+    // set up vertex data (and buffer(s)) and configure vertex attributes
+    // ------------------------------------------------------------------
+    //float vertices[] = {
+    //    // postions            // norm              // texCoords
+    //     0.5f,  0.5f,  0.5f,   1.0f,  1.0f,  1.0f,  //3.0f, 3.0f,     // top right outer
+    //     0.5f, -0.5f,  0.5f,   1.0f, -1.0f,  1.0f,  //3.0f, 0.0f,     // bottom right outer
+    //    -0.5f, -0.5f,  0.5f,  -1.0f, -1.0f,  1.0f,  //0.0f, 0.0f,     // bottom left outer
+    //    -0.5f,  0.5f,  0.5f,  -1.0f,  1.0f,  1.0f,  //0.0f, 3.0f,     // top left outer
+    //     0.5f,  0.5f, -0.5f,   1.0f,  1.0f, -1.0f,  //3.0f, 3.0f,     // top right inner
+    //     0.5f, -0.5f, -0.5f,   1.0f, -1.0f, -1.0f,  //3.0f, 0.0f,     // bottom right inner
+    //    -0.5f, -0.5f, -0.5f,  -1.0f, -1.0f, -1.0f,  //0.0f, 0.0f,     // bottom left inner
+    //    -0.5f,  0.5f, -0.5f,  -1.0f,  1.0f, -1.0f,  //0.0f, 3.0f,     // top left inner
+    //};
+
+    float vertices[] = {
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+         0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
+
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+         0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f,  0.0f,  1.0f,
+
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f,  0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f, -0.5f, -0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f, -0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
+        -0.5f,  0.5f,  0.5f, -1.0f,  0.0f,  0.0f,
+
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f,  0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f, -0.5f, -0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f, -0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  1.0f,  0.0f,  0.0f,
+
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,
+         0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
+         0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
+        -0.5f, -0.5f,  0.5f,  0.0f, -1.0f,  0.0f,
+        -0.5f, -0.5f, -0.5f,  0.0f, -1.0f,  0.0f,
+
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
+         0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
+         0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
+        -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
+        -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
+    };
+
+    //unsigned int indices[] = {  // note that we start from 0!
+    //    0, 1, 2,    // first triangle outer
+    //    2, 3, 0,    // second triangle outer
+    //    4, 5, 6,    // first triangle inner
+    //    6, 7, 4,    // second triangle inner
+    //    0, 3, 4,    // first triangle top
+    //    4, 7, 3,    // second triangle top
+    //    1, 2, 5,    // first triangle bottom
+    //    5, 6, 2,    // second triangle bottom
+    //    2, 3, 6,    // first triangle left
+    //    6, 7, 3,    // second triangle left
+    //    0, 1, 4,    // first triangle right
+    //    4, 5, 1,    // second triangle right
+    //};
+
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    //glGenBuffers(1, &EBO);
+    // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
+    glBindVertexArray(VAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    //glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    //glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
+    // position attribute
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    // normal attribute
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    //glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(6 * sizeof(float)));
+    //glEnableVertexAttribArray(2);
+
+    //glGenTextures(1, &texture);
+    //glActiveTexture(GL_TEXTURE0);
+    //glBindTexture(GL_TEXTURE_2D, texture);
+
+    //// set the texture wrapping parameters
+    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);	// set texture wrapping to GL_REPEAT (default wrapping method)
+    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    //// set texture filtering parameters
+    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    //glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    //enum class imageChannel
+    //{
+    //    RGB = 3,
+    //    RGBA
+    //};
+
+    //int width, height, nrChannels, desiredChannel;
+    //stbi_set_flip_vertically_on_load(true);
+    //unsigned char* data = stbi_load("Assets/OK!.png", &width, &height, &nrChannels, 0);
+    //desiredChannel = nrChannels; // format color channels
+    //switch (desiredChannel)
+    //{
+    //case static_cast<int>(imageChannel::RGBA):
+    //{
+    //    internalFormat = GL_RGBA;
+    //}
+    //break;
+    //case static_cast<int>(imageChannel::RGB):
+    //{
+    //    internalFormat = GL_RGB;
+    //}
+    //break;
+    //}
+    //if (data)
+    //{
+    //    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0, internalFormat, GL_UNSIGNED_BYTE, data);
+    //    glGenerateMipmap(GL_TEXTURE_2D);
+    //    utils::Log::i("initializeShaderProgram", std::format("width:{}, height:{}, nrChannels:{}", width, height, nrChannels).c_str());
+    //}
+    //else
+    //{
+    //    utils::Log::e("initializeShaderProgram", "Failed to load Texture!!!");
+    //}
+    //// note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
+    //stbi_image_free(data);
+
+    // pass projection matrix to shader (as projection matrix rarely changes there's no need to do this per frame)
+    // -----------------------------------------------------------------------------------------------------------
+    fov = 45.0f;
+    lastX = ctxWidth / 2.0f;
+    lastY = ctxHeight / 2.0f;
+    glUseProgram(shaderProgram);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    viewLoc = glGetUniformLocation(shaderProgram, "view");
+    modelLoc = glGetUniformLocation(shaderProgram, "model");
+    objectColorLoc = glGetUniformLocation(shaderProgram, "objectColor");
+    lightColorLoc = glGetUniformLocation(shaderProgram, "lightColor");
+    projectionLoc = glGetUniformLocation(shaderProgram, "projection");
+    lightPosLoc = glGetUniformLocation(shaderProgram, "lightPos");
+    // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
+    // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
+    //glBindVertexArray(0);
+
+
+    // uncomment this call to draw in wireframe polygons.
+    //glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+
+    StopWaiting();
 }

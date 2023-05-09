@@ -81,7 +81,7 @@ unsigned int shaderProgram;
 unsigned int VBO, VAO, EBO, internalFormat;
 unsigned int lightCubeVAO;
 unsigned int texture;
-unsigned int viewLoc, modelLoc, projectionLoc, lightPosLoc, lightColorLoc, objectColorLoc;
+unsigned int viewLoc, modelLoc, projectionLoc, lightPosLoc, lightColorLoc, objectColorLoc, viewPosLoc;
 // camera
 glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
 glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
@@ -115,7 +115,7 @@ const char* vertexShaderSource = "#version 460 core\n"
 "void main()\n"
 "{\n"
 "   FragPos = vec3(model * vec4(aPos, 1.0));\n"
-"   Normal = aNormal;\n"
+"   Normal = mat3(transpose(inverse(model))) * aNormal;\n"
 "   gl_Position = projection * view * vec4(FragPos, 1.0);\n"
 //"   TexCoord = aTexCoord;\n"
 "}\n\0";
@@ -125,6 +125,7 @@ const char* fragmentShaderSource = "#version 460 core\n"
 "in vec3 Normal;\n"
 "in vec3 FragPos;\n"
 "uniform vec3 lightPos;\n"
+"uniform vec3 viewPos;\n"
 "uniform vec3 lightColor;\n"
 "uniform vec3 objectColor;\n"
 //"in vec2 TexCoord;\n"
@@ -140,7 +141,13 @@ const char* fragmentShaderSource = "#version 460 core\n"
 "     vec3 lightDir = normalize(lightPos - FragPos);\n"
 "     float diff = max(dot(norm, lightDir), 0.0);\n"
 "     vec3 diffuse = diff * lightColor;\n"
-"     vec3 result = (ambient + diffuse) * objectColor;\n"
+// specular
+"     float specularStrength = 0.5;\n"
+"     vec3 viewDir = normalize(viewPos - FragPos);\n"
+"     vec3 reflectDir = reflect(-lightDir, norm);\n"
+"     float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32);\n"
+"     vec3 specular = specularStrength * spec * lightColor;\n"
+"     vec3 result = (ambient + diffuse + specular) * objectColor;\n"
 "     FragColor = vec4(result, 1.0);\n"
 "}\n\0";
 
@@ -979,7 +986,7 @@ void ExitGame(HWND hWnd)
 
 GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei const& ctxHeight)
 {
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClearColor(0.03f, 0.03f, 0.03f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // bind Texture
@@ -989,15 +996,7 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
 
     // camera/view transformation
     glm::mat4 view = glm::mat4(1.0f); // make sure to initialize matrix to identity matrix first
-    if (cameraDirect == glm::vec3(0.0f, 0.0f, 0.0f))
-    {
-        float radius = 5.0f;
-        float camX = static_cast<float>(sin(timer.GetTotalSeconds()) * radius);
-        float camZ = static_cast<float>(cos(timer.GetTotalSeconds()) * radius);
-        cameraPos = glm::vec3(camX, 0.0f, camZ);
-        cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-    }
-    lightPos = cameraPos;
+    //lightPos = cameraPos;
 
     glm::mat4 projection = glm::perspective(glm::radians(fov), (float)ctxWidth / (float)ctxHeight, 0.1f, 100.0f);
     glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projection));
@@ -1028,11 +1027,12 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
     glUniform3fv(lightColorLoc, 1, glm::value_ptr(lightColor));
     //setup light position
     glUniform3fv(lightPosLoc, 1, glm::value_ptr(lightPos));
+    glUniform3fv(viewPosLoc, 1, glm::value_ptr(cameraPos));
     // Render cube
     glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
-    glDrawArrays(GL_TRIANGLES, 0, 36);
+    //glDrawArrays(GL_TRIANGLES, 0, 36);
 
-    //glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
     //glBindVertexArray(0); // no need to unbind it every time
 
     //front mini model
@@ -1043,15 +1043,16 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
     model = glm::translate(model, glm::vec3(miniModelX, (modelAspect - 1.0f) / 2, miniModelZ));
     model = glm::scale(model, glm::vec3(modelAspect, modelAspect, modelAspect));
     glm::vec3 convertToVec3(model[3].x, model[3].y, model[3].z);
-    //lightPos = convertToVec3;
+    lightPos = convertToVec3;
+    transformColor = glm::vec3(1.0f, 1.0f, 1.0f);
 
     glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
     glUniform3fv(objectColorLoc, 1, glm::value_ptr(transformColor));
 
     glBindVertexArray(VAO);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
+    //glDrawArrays(GL_TRIANGLES, 0, 36);
 
-    //glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
     SwapBuffers(ghDC);
 }
 
@@ -1059,7 +1060,8 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 {
     m_ctxWidth = ctxWidth;
     m_ctxHeight = ctxHeight;
-    glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glEnable(GL_DEPTH_TEST);
     // build and compile our shader program
     // ------------------------------------
     // vertex shader
@@ -1102,19 +1104,19 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 
     // set up vertex data (and buffer(s)) and configure vertex attributes
     // ------------------------------------------------------------------
-    //float vertices[] = {
-    //    // postions            // norm              // texCoords
-    //     0.5f,  0.5f,  0.5f,   1.0f,  1.0f,  1.0f,  //3.0f, 3.0f,     // top right outer
-    //     0.5f, -0.5f,  0.5f,   1.0f, -1.0f,  1.0f,  //3.0f, 0.0f,     // bottom right outer
-    //    -0.5f, -0.5f,  0.5f,  -1.0f, -1.0f,  1.0f,  //0.0f, 0.0f,     // bottom left outer
-    //    -0.5f,  0.5f,  0.5f,  -1.0f,  1.0f,  1.0f,  //0.0f, 3.0f,     // top left outer
-    //     0.5f,  0.5f, -0.5f,   1.0f,  1.0f, -1.0f,  //3.0f, 3.0f,     // top right inner
-    //     0.5f, -0.5f, -0.5f,   1.0f, -1.0f, -1.0f,  //3.0f, 0.0f,     // bottom right inner
-    //    -0.5f, -0.5f, -0.5f,  -1.0f, -1.0f, -1.0f,  //0.0f, 0.0f,     // bottom left inner
-    //    -0.5f,  0.5f, -0.5f,  -1.0f,  1.0f, -1.0f,  //0.0f, 3.0f,     // top left inner
-    //};
-
     float vertices[] = {
+        // postions            // norm              // texCoords
+         0.5f,  0.5f,  0.5f,   1.0f,  1.0f,  1.0f,  //3.0f, 3.0f,     // top right outer
+         0.5f, -0.5f,  0.5f,   1.0f, -1.0f,  1.0f,  //3.0f, 0.0f,     // bottom right outer
+        -0.5f, -0.5f,  0.5f,  -1.0f, -1.0f,  1.0f,  //0.0f, 0.0f,     // bottom left outer
+        -0.5f,  0.5f,  0.5f,  -1.0f,  1.0f,  1.0f,  //0.0f, 3.0f,     // top left outer
+         0.5f,  0.5f, -0.5f,   1.0f,  1.0f, -1.0f,  //3.0f, 3.0f,     // top right inner
+         0.5f, -0.5f, -0.5f,   1.0f, -1.0f, -1.0f,  //3.0f, 0.0f,     // bottom right inner
+        -0.5f, -0.5f, -0.5f,  -1.0f, -1.0f, -1.0f,  //0.0f, 0.0f,     // bottom left inner
+        -0.5f,  0.5f, -0.5f,  -1.0f,  1.0f, -1.0f,  //0.0f, 3.0f,     // top left inner
+    };
+
+    /*float vertices[] = {
         -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
          0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
          0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
@@ -1156,34 +1158,34 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
          0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
         -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
         -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
-    };
+    };*/
 
-    //unsigned int indices[] = {  // note that we start from 0!
-    //    0, 1, 2,    // first triangle outer
-    //    2, 3, 0,    // second triangle outer
-    //    4, 5, 6,    // first triangle inner
-    //    6, 7, 4,    // second triangle inner
-    //    0, 3, 4,    // first triangle top
-    //    4, 7, 3,    // second triangle top
-    //    1, 2, 5,    // first triangle bottom
-    //    5, 6, 2,    // second triangle bottom
-    //    2, 3, 6,    // first triangle left
-    //    6, 7, 3,    // second triangle left
-    //    0, 1, 4,    // first triangle right
-    //    4, 5, 1,    // second triangle right
-    //};
+    unsigned int indices[] = {  // note that we start from 0!
+        0, 1, 2,    // first triangle outer
+        2, 3, 0,    // second triangle outer
+        4, 5, 6,    // first triangle inner
+        6, 7, 4,    // second triangle inner
+        0, 3, 4,    // first triangle top
+        4, 7, 3,    // second triangle top
+        1, 2, 5,    // first triangle bottom
+        5, 6, 2,    // second triangle bottom
+        2, 3, 6,    // first triangle left
+        6, 7, 3,    // second triangle left
+        0, 1, 4,    // first triangle right
+        4, 5, 1,    // second triangle right
+    };
 
     glGenVertexArrays(1, &VAO);
     glGenBuffers(1, &VBO);
-    //glGenBuffers(1, &EBO);
+    glGenBuffers(1, &EBO);
     // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
     glBindVertexArray(VAO);
 
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-    //glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    //glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
     // position attribute
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
@@ -1246,9 +1248,6 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
     fov = 45.0f;
     lastX = ctxWidth / 2.0f;
     lastY = ctxHeight / 2.0f;
-    glUseProgram(shaderProgram);
-
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     viewLoc = glGetUniformLocation(shaderProgram, "view");
     modelLoc = glGetUniformLocation(shaderProgram, "model");
@@ -1256,6 +1255,7 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
     lightColorLoc = glGetUniformLocation(shaderProgram, "lightColor");
     projectionLoc = glGetUniformLocation(shaderProgram, "projection");
     lightPosLoc = glGetUniformLocation(shaderProgram, "lightPos");
+    viewPosLoc = glGetUniformLocation(shaderProgram, "viewPos");
     // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
     // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
     //glBindVertexArray(0);

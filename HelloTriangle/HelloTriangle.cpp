@@ -94,7 +94,7 @@ glm::vec3 Right;
 glm::vec3 WorldUp = cameraUp;
 GLfloat latitude, longitude, latinc, longinc, fov, lastX, lastY;
 float ambientStrength = 0.8f;
-float k_speed = 1.0f;
+float k_speed = 2.0f;
 float yaw = -90.0f;	// yaw is initialized to -90.0 degrees since a yaw of 0.0 results in a direction vector pointing to the right so we initially rotate a bit to the left.
 float pitch = 0.0f;
 GLdouble radius;

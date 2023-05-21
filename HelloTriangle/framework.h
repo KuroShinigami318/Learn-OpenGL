@@ -17,3 +17,4 @@
 #include <tchar.h>
 #include <future>
 #include <optional>
+#include <regex>

@@ -34,7 +34,7 @@ void Sample::Update(DX::StepTimer const&)
 {
 	if (m_timer.GetTotalSeconds() - m_preUpdateTime > 1)
 	{
-		//utils::Log::i("Sample::Update", FORMAT("Get FPS: {}", m_timer.GetFramesPerSecond()));
+		utils::Log::i("Sample::Update", FORMAT("Get FPS: {}", m_timer.GetFramesPerSecond()));
 		m_preUpdateTime = m_timer.GetTotalSeconds();
 		m_lastFrame = m_frame;
 	}

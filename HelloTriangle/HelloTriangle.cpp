@@ -81,7 +81,7 @@ unsigned int shaderProgram;
 unsigned int VBO, VAO, EBO, internalFormat;
 unsigned int lightCubeVAO;
 unsigned int texture;
-unsigned int viewLoc, modelLoc, projectionLoc, lightPosLoc, lightColorLoc, objectColorLoc, viewPosLoc;
+unsigned int viewLoc, modelLoc, projectionLoc, lightPosLoc, lightColorLoc, objectColorLoc, viewPosLoc, ambientStrengthLoc;
 // camera
 glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
 glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
@@ -93,6 +93,7 @@ glm::vec3 lightColor = glm::vec3(1.0f);
 glm::vec3 Right;
 glm::vec3 WorldUp = cameraUp;
 GLfloat latitude, longitude, latinc, longinc, fov, lastX, lastY;
+float ambientStrength = 0.8f;
 float k_speed = 1.0f;
 float yaw = -90.0f;	// yaw is initialized to -90.0 degrees since a yaw of 0.0 results in a direction vector pointing to the right so we initially rotate a bit to the left.
 float pitch = 0.0f;
@@ -128,13 +129,13 @@ const char* fragmentShaderSource = "#version 460 core\n"
 "uniform vec3 viewPos;\n"
 "uniform vec3 lightColor;\n"
 "uniform vec3 objectColor;\n"
+"uniform float ambientStrength;\n"
 //"in vec2 TexCoord;\n"
 //"uniform sampler2D ourTexture;"
 "void main()\n"
 "{\n"
 //"   FragColor = texture(ourTexture, TexCoord);\n"
 // ambient
-"     float ambientStrength = 0.1;\n"
 "     vec3 ambient = ambientStrength * lightColor;\n"
 // diffuse
 "     vec3 norm = normalize(Normal);\n"
@@ -517,6 +518,7 @@ double Move(VKEY move)
                 cameraDirect = cameraPos + cameraFront;
             break;
             }
+            std::this_thread::sleep_for(std::chrono::milliseconds(utils::k_updateIntervalMilliseconds));
         }
         return 0;
     }(move);
@@ -914,21 +916,26 @@ void StopWaiting()
 INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
     UNREFERENCED_PARAMETER(lParam);
-    HWND hwndHot = NULL;
+    HWND hwndCtrl = NULL;
+    std::string ambientStr{};
+    unsigned int result = 0;
+    bool isValid = false;
     switch (message)
     {
     case WM_INITDIALOG:
         isKeyPressed[VKEY::ALT] = false;
-        hwndHot = GetDlgItem(hDlg, IDC_KEYUP);
-        SendMessage(hwndHot, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::UP)[0], 0), 0);
-        hwndHot = GetDlgItem(hDlg, IDC_KEYDOWN);
-        SendMessage(hwndHot, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::DOWN)[0], 0), 0);
-        hwndHot = GetDlgItem(hDlg, IDC_KEYLEFT);
-        SendMessage(hwndHot, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::LEFT)[0], 0), 0);
-        hwndHot = GetDlgItem(hDlg, IDC_KEYRIGHT);
-        SendMessage(hwndHot, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::RIGHT)[0], 0), 0);
-        hwndHot = GetDlgItem(hDlg, IDC_LIGHT);
-        SendMessage(hwndHot, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::LIGHTING)[0], 0), 0);
+        hwndCtrl = GetDlgItem(hDlg, IDC_KEYUP);
+        SendMessage(hwndCtrl, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::UP)[0], 0), 0);
+        hwndCtrl = GetDlgItem(hDlg, IDC_KEYDOWN);
+        SendMessage(hwndCtrl, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::DOWN)[0], 0), 0);
+        hwndCtrl = GetDlgItem(hDlg, IDC_KEYLEFT);
+        SendMessage(hwndCtrl, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::LEFT)[0], 0), 0);
+        hwndCtrl = GetDlgItem(hDlg, IDC_KEYRIGHT);
+        SendMessage(hwndCtrl, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::RIGHT)[0], 0), 0);
+        hwndCtrl = GetDlgItem(hDlg, IDC_LIGHT);
+        SendMessage(hwndCtrl, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::LIGHTING)[0], 0), 0);
+        hwndCtrl = GetDlgItem(hDlg, IDC_EDIT1);
+        SetWindowTextA(hwndCtrl, FORMAT("{}", ambientStrength));
         return (INT_PTR)TRUE;
 
     case WM_COMMAND:
@@ -936,21 +943,32 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
         {
         case IDOK:
             WORD wHotkey;
-            hwndHot = GetDlgItem(hDlg, IDC_KEYUP);
-            wHotkey = (WORD)SendMessage(hwndHot, HKM_GETHOTKEY, 0, 0);
+            hwndCtrl = GetDlgItem(hDlg, IDC_KEYUP);
+            wHotkey = (WORD)SendMessage(hwndCtrl, HKM_GETHOTKEY, 0, 0);
             SetVKeyMapping(VKEY::UP, wHotkey);
-            hwndHot = GetDlgItem(hDlg, IDC_KEYDOWN);
-            wHotkey = (WORD)SendMessage(hwndHot, HKM_GETHOTKEY, 0, 0);
+            hwndCtrl = GetDlgItem(hDlg, IDC_KEYDOWN);
+            wHotkey = (WORD)SendMessage(hwndCtrl, HKM_GETHOTKEY, 0, 0);
             SetVKeyMapping(VKEY::DOWN, wHotkey);
-            hwndHot = GetDlgItem(hDlg, IDC_KEYLEFT);
-            wHotkey = (WORD)SendMessage(hwndHot, HKM_GETHOTKEY, 0, 0);
+            hwndCtrl = GetDlgItem(hDlg, IDC_KEYLEFT);
+            wHotkey = (WORD)SendMessage(hwndCtrl, HKM_GETHOTKEY, 0, 0);
             SetVKeyMapping(VKEY::LEFT, wHotkey);
-            hwndHot = GetDlgItem(hDlg, IDC_KEYRIGHT);
-            wHotkey = (WORD)SendMessage(hwndHot, HKM_GETHOTKEY, 0, 0);
+            hwndCtrl = GetDlgItem(hDlg, IDC_KEYRIGHT);
+            wHotkey = (WORD)SendMessage(hwndCtrl, HKM_GETHOTKEY, 0, 0);
             SetVKeyMapping(VKEY::RIGHT, wHotkey);
-            hwndHot = GetDlgItem(hDlg, IDC_LIGHT);
-            wHotkey = (WORD)SendMessage(hwndHot, HKM_GETHOTKEY, 0, 0);
+            hwndCtrl = GetDlgItem(hDlg, IDC_LIGHT);
+            wHotkey = (WORD)SendMessage(hwndCtrl, HKM_GETHOTKEY, 0, 0);
             SetVKeyMapping(VKEY::LIGHTING, wHotkey);
+            hwndCtrl = GetDlgItem(hDlg, IDC_EDIT1);{}
+            result = GetWindowTextA(hwndCtrl, ambientStr.data(), 5);
+            isValid = !std::regex_search(ambientStr.data(), std::regex("([^.0-9]+)"), std::regex_constants::match_any);
+            if (result > 0 && isValid)
+            {
+                ambientStrength = std::stof(ambientStr);
+            }
+            else
+            {
+                ERROR_LOG("Get Ambient Strength Failed!");
+            }
             EndDialog(hDlg, LOWORD(wParam));
             LockCursor(true, GetParent(hDlg));
             return (INT_PTR)TRUE;
@@ -986,7 +1004,7 @@ void ExitGame(HWND hWnd)
 
 GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei const& ctxHeight)
 {
-    glClearColor(0.03f, 0.03f, 0.03f, 1.0f);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // bind Texture
@@ -1025,14 +1043,15 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
     glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
     glUniform3fv(objectColorLoc, 1, glm::value_ptr(transformColor));
     glUniform3fv(lightColorLoc, 1, glm::value_ptr(lightColor));
+    glUniform1f(ambientStrengthLoc, ambientStrength);
     //setup light position
     glUniform3fv(lightPosLoc, 1, glm::value_ptr(lightPos));
     glUniform3fv(viewPosLoc, 1, glm::value_ptr(cameraPos));
     // Render cube
     glBindVertexArray(VAO); // seeing as we only have a single VAO there's no need to bind it every time, but we'll do so to keep things a bit more organized
-    //glDrawArrays(GL_TRIANGLES, 0, 36);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
 
-    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+    //glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
     //glBindVertexArray(0); // no need to unbind it every time
 
     //front mini model
@@ -1050,9 +1069,9 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
     glUniform3fv(objectColorLoc, 1, glm::value_ptr(transformColor));
 
     glBindVertexArray(VAO);
-    //glDrawArrays(GL_TRIANGLES, 0, 36);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
 
-    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+    //glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
     SwapBuffers(ghDC);
 }
 
@@ -1104,19 +1123,19 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 
     // set up vertex data (and buffer(s)) and configure vertex attributes
     // ------------------------------------------------------------------
-    float vertices[] = {
-        // postions            // norm              // texCoords
-         0.5f,  0.5f,  0.5f,   1.0f,  1.0f,  1.0f,  //3.0f, 3.0f,     // top right outer
-         0.5f, -0.5f,  0.5f,   1.0f, -1.0f,  1.0f,  //3.0f, 0.0f,     // bottom right outer
-        -0.5f, -0.5f,  0.5f,  -1.0f, -1.0f,  1.0f,  //0.0f, 0.0f,     // bottom left outer
-        -0.5f,  0.5f,  0.5f,  -1.0f,  1.0f,  1.0f,  //0.0f, 3.0f,     // top left outer
-         0.5f,  0.5f, -0.5f,   1.0f,  1.0f, -1.0f,  //3.0f, 3.0f,     // top right inner
-         0.5f, -0.5f, -0.5f,   1.0f, -1.0f, -1.0f,  //3.0f, 0.0f,     // bottom right inner
-        -0.5f, -0.5f, -0.5f,  -1.0f, -1.0f, -1.0f,  //0.0f, 0.0f,     // bottom left inner
-        -0.5f,  0.5f, -0.5f,  -1.0f,  1.0f, -1.0f,  //0.0f, 3.0f,     // top left inner
-    };
+    //float vertices[] = {
+    //    // postions            // norm              // texCoords
+    //     0.5f,  0.5f,  0.5f,   1.0f,  1.0f,  1.0f,  //3.0f, 3.0f,     // top right outer
+    //     0.5f, -0.5f,  0.5f,   1.0f, -1.0f,  1.0f,  //3.0f, 0.0f,     // bottom right outer
+    //    -0.5f, -0.5f,  0.5f,  -1.0f, -1.0f,  1.0f,  //0.0f, 0.0f,     // bottom left outer
+    //    -0.5f,  0.5f,  0.5f,  -1.0f,  1.0f,  1.0f,  //0.0f, 3.0f,     // top left outer
+    //     0.5f,  0.5f, -0.5f,   1.0f,  1.0f, -1.0f,  //3.0f, 3.0f,     // top right inner
+    //     0.5f, -0.5f, -0.5f,   1.0f, -1.0f, -1.0f,  //3.0f, 0.0f,     // bottom right inner
+    //    -0.5f, -0.5f, -0.5f,  -1.0f, -1.0f, -1.0f,  //0.0f, 0.0f,     // bottom left inner
+    //    -0.5f,  0.5f, -0.5f,  -1.0f,  1.0f, -1.0f,  //0.0f, 3.0f,     // top left inner
+    //};
 
-    /*float vertices[] = {
+    float vertices[] = {
         -0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
          0.5f, -0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
          0.5f,  0.5f, -0.5f,  0.0f,  0.0f, -1.0f,
@@ -1158,34 +1177,19 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
          0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
         -0.5f,  0.5f,  0.5f,  0.0f,  1.0f,  0.0f,
         -0.5f,  0.5f, -0.5f,  0.0f,  1.0f,  0.0f,
-    };*/
-
-    unsigned int indices[] = {  // note that we start from 0!
-        0, 1, 2,    // first triangle outer
-        2, 3, 0,    // second triangle outer
-        4, 5, 6,    // first triangle inner
-        6, 7, 4,    // second triangle inner
-        0, 3, 4,    // first triangle top
-        4, 7, 3,    // second triangle top
-        1, 2, 5,    // first triangle bottom
-        5, 6, 2,    // second triangle bottom
-        2, 3, 6,    // first triangle left
-        6, 7, 3,    // second triangle left
-        0, 1, 4,    // first triangle right
-        4, 5, 1,    // second triangle right
     };
 
     glGenVertexArrays(1, &VAO);
     glGenBuffers(1, &VBO);
-    glGenBuffers(1, &EBO);
+    //glGenBuffers(1, &EBO);
     // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
     glBindVertexArray(VAO);
 
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    /*glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);*/
 
     // position attribute
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
@@ -1256,6 +1260,7 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
     projectionLoc = glGetUniformLocation(shaderProgram, "projection");
     lightPosLoc = glGetUniformLocation(shaderProgram, "lightPos");
     viewPosLoc = glGetUniformLocation(shaderProgram, "viewPos");
+    ambientStrengthLoc = glGetUniformLocation(shaderProgram, "ambientStrength");
     // You can unbind the VAO afterwards so other VAO calls won't accidentally modify this VAO, but this rarely happens. Modifying other
     // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
     //glBindVertexArray(0);

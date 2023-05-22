@@ -52,7 +52,7 @@ WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 HDC   ghDC;
 HGLRC ghRC;
 GLsizei m_ctxWidth, m_ctxHeight;
-std::shared_ptr<Sample*> g_sample;
+std::unique_ptr<Sample*> g_sample;
 std::mutex m_mutex;
 std::condition_variable cv;
 std::unique_ptr<utils::WorkerThread<void()>> registerNotify;
@@ -174,7 +174,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
 
     // TODO: Place code here.
-    g_sample = std::make_shared<Sample*>(new Sample());
+    g_sample = std::make_unique<Sample*>(new Sample());
     registerNotify = std::make_unique<utils::WorkerThread<void()>>(false, "State Notification Thread", utils::MODE::MESSAGE_QUEUE);
     processLifeCycle = std::make_unique<utils::WorkerThread<void()>>(true, "Life Cycle Update Thread");
     processLifeCycle->CreateWorkerThread([&]() {
@@ -261,7 +261,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     CloseHandle(g_plmSuspendComplete);
     CloseHandle(g_plmSignalResume);
-
 
     return (int) msg.wParam;
 }
@@ -475,16 +474,17 @@ double Move(VKEY move)
             elapsed_seconds = currentTP - preUpdateTP;
             if (elapsed_seconds.count() < deltaTime)
             {
-                continue;
+                int sleepTime = static_cast<int> (elapsed_seconds.count() * 1E6);
+                std::this_thread::sleep_for(std::chrono::microseconds(sleepTime));
             }
             preUpdateTP = currentTP;
-            cameraSpeed = k_speed * deltaTime;
+            cameraSpeed = k_speed * elapsed_seconds.count();
             switch (move)
             {
             case VKEY::UP:
                 if (isKeyPressed[VKEY::SHIFT] && !(isKeyPressed[VKEY::LEFT] || isKeyPressed[VKEY::RIGHT]))
                 {
-                    cameraSpeed = 2.5 * k_speed * deltaTime;
+                    cameraSpeed = 2.5 * k_speed * elapsed_seconds.count();
                 }
                 if (isKeyPressed[VKEY::DOWN])
                 {
@@ -518,7 +518,6 @@ double Move(VKEY move)
                 cameraDirect = cameraPos + cameraFront;
             break;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(utils::k_updateIntervalMilliseconds));
         }
         return 0;
     }(move);

@@ -1,13 +1,13 @@
 #pragma once
+#include "framework.h"
 #include <windows.h>
 #include <memory>
 #include <cstdint>
 #include "common/StepTimer.h"
-#include "common/Log.h"
-#include "common/WorkerThread.h"
 #include <glad/glad.h>
+#include <vector>
 
-class Sample
+class Sample : public utils::WorkerRunnable<void()>
 {
 public:
 	Sample();

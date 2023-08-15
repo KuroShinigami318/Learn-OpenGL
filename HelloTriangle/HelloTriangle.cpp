@@ -1,6 +1,7 @@
 // HelloTriangle.cpp : Defines the entry point for the application.
 //
 #include "framework.h"
+#include "common/MessageQueue.h"
 #include "HelloTriangle.h"
 #include "Sample.h"
 #include "common/StepTimer.h"
@@ -9,8 +10,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 //#include <glad/glad_wgl.h>
-#include "common/Log.h"
-#include "common/WorkerThread.h"
 #include "lib/bel_ImgLoader/include/stb_image.h"
 //#include "lib/bel_lodepng/include/lodepng.h"
 
@@ -52,12 +51,12 @@ WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 HDC   ghDC;
 HGLRC ghRC;
 GLsizei m_ctxWidth, m_ctxHeight;
-std::unique_ptr<Sample*> g_sample;
+std::shared_ptr<Sample> g_sample;
 std::mutex m_mutex;
-std::condition_variable cv;
 std::unique_ptr<utils::WorkerThread<void()>> registerNotify;
 std::unique_ptr<utils::WorkerThread<void()>> processLifeCycle;
 utils::WorkerThread<double()> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, 50, true, 4);
+utils::MessageQueue mainThreadQueue;
 HANDLE g_plmSuspendComplete = nullptr;
 HANDLE g_plmSignalResume = nullptr;
 PAPPSTATE_REGISTRATION hPLM = {};
@@ -153,8 +152,6 @@ const char* fragmentShaderSource = "#version 460 core\n"
 "}\n\0";
 
 // Forward declarations of functions included in this code module:
-void                Wait();
-void                StopWaiting();
 void                CleanResource();
 ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
@@ -174,7 +171,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
 
     // TODO: Place code here.
-    g_sample = std::make_unique<Sample*>(new Sample());
+    g_sample = std::make_shared<Sample>();
+    {
+        utils::WorkerThread<void()> trashThread(true, g_sample, "Trash Thread");
+    }
     registerNotify = std::make_unique<utils::WorkerThread<void()>>(false, "State Notification Thread", utils::MODE::MESSAGE_QUEUE);
     processLifeCycle = std::make_unique<utils::WorkerThread<void()>>(true, "Life Cycle Update Thread");
     processLifeCycle->CreateWorkerThread([&]() {
@@ -182,7 +182,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         {
             if (isSignalSuspend)
             {
-                (*g_sample)->OnSuspending();
+                g_sample->OnSuspending();
                 // Complete deferral
                 SetEvent(g_plmSuspendComplete);
                 (void)WaitForSingleObject(g_plmSignalResume, INFINITE);
@@ -192,7 +192,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                 }
                 if (!m_isPause)
                 {
-                    (*g_sample)->OnResuming();
+                    g_sample->OnResuming();
                     for (VKEY iterKey = VKEY::_BEGIN; iterKey != VKEY::_END; ++iterKey)
                     {
                         isKeyPressed[iterKey] = false;
@@ -200,17 +200,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                 }
             }
 
-            // update thread loop            
-            if (!m_isPause && (*g_sample)->GetThread()->GetCurrentMode() == utils::MODE::UPDATE_CALLBACK)
-            {
-                if (m_isExiting)
-                {
-                    utils::Log::e("UpdateThreadLoop", FORMAT("m_isExiting={}, should not be occured here!!!", m_isExiting));
-                    break;
-                }
-                (*g_sample)->GetThread()->Pause(false);
-                (*g_sample)->GetThread()->RunOneTime(false);
-            }
             Sleep(1);
         }
     });
@@ -248,16 +237,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         else
         {
             // main loop here
+            std::lock_guard<std::mutex> lk_guard(m_mutex);
+            if (!isSignalSuspend)
+            {
+                g_sample->GetThread()->Dispatch();
+                mainThreadQueue.Dispatch();
+            }
         }
     }
 
     utils::Log::d("Main Thread", "Exiting Game");
-    processLifeCycle.reset();
-    utils::Log::d("Main Thread", "Exited processLifeCycle thread");
-    registerNotify.reset();
-    utils::Log::d("Main Thread", "Exited notify thread");
     g_sample.reset();
     utils::Log::d("Main Thread", "Exited Render thread");
+    registerNotify.reset();
+    utils::Log::d("Main Thread", "Exited notify thread");
+    processLifeCycle.reset();
+    utils::Log::d("Main Thread", "Exited processLifeCycle thread");
 
     CloseHandle(g_plmSuspendComplete);
     CloseHandle(g_plmSignalResume);
@@ -362,9 +357,9 @@ GLvoid resize(GLsizei width, GLsizei height)
     m_ctxWidth = width;
     m_ctxHeight = height;
     glViewport(0, 0, width, height);
-    (*g_sample)->GetThread()->Pause(true);
-    (*g_sample)->GetThread()->ChangeMode(utils::MODE::UPDATE_CALLBACK);
-    (*g_sample)->ResetCallbackRenderThread(width, height);
+    g_sample->GetThread()->ChangeMode(utils::MODE::UPDATE_CALLBACK);
+    g_sample->ResetCallbackRenderThread(m_ctxWidth, m_ctxHeight);
+    g_sample->GetThread()->Pause(m_isPause);
 }
 
 void createGLContext()
@@ -402,8 +397,6 @@ void createGLContext()
         MessageBoxA(0, "glad fail", "loadOpenGLFunctions", 0);
         throw std::runtime_error("ERROR::LOAD_OPEN_GL_FUNCTIONS::FAILED");
     }
-
-    StopWaiting();
 }
 
 int loadOpenGLFunctions() 
@@ -445,15 +438,10 @@ double Calc_pi_MT(int n)
         calcThread.PushCallback(&Calc_pi, n, i, CONCURRENCY);
     }
     calcThread.Dispatch();
-    int i = 0;
-    while (!calcThread.HasAllMTProcessDone())
+    calcThread.Wait();
+    while (!calcThread.IsEmptyResult())
     {
-        if (!calcThread.IsEmptyResult())
-        {
-            result += calcThread.PopResult();
-            i++;
-        }
-        if (i == CONCURRENCY) break;
+        result += calcThread.PopResult();
     }
     return result;
 }
@@ -469,7 +457,7 @@ double Move(VKEY move)
         std::chrono::duration<double> elapsed_seconds = currentTP - preUpdateTP;
         while (!m_isExiting && isKeyPressed[move])
         {
-            deltaTime = (*g_sample)->GetTimer().GetElapsedSeconds();
+            deltaTime = g_sample->GetTimer().GetElapsedSeconds();
             currentTP = std::chrono::system_clock::now();
             elapsed_seconds = currentTP - preUpdateTP;
             if (elapsed_seconds.count() < deltaTime)
@@ -593,14 +581,7 @@ void MouseCallback(HWND hWnd, double i_xpos, double i_ypos)
     }*/
     float xpos = static_cast<float>(i_xpos);
     float ypos = static_cast<float>(i_ypos);
-
     POINT pCursor;
-    if (xpos ==0 || ypos == 0 || xpos == m_ctxWidth || ypos == m_ctxHeight)
-    {
-        SetMiddleCursorPos(hWnd);
-        firstMouse = true;
-        return;
-    }
 
     if (firstMouse)
     {
@@ -644,7 +625,6 @@ void ScrollCallback(HWND hWnd, double yoffset)
         fov = 1.0f;
     if (fov > 45.0f)
         fov = 45.0f;
-    DEBUG_LOG("fov: {}, yoffset: {}", fov, yoffset);
 }
 
 //
@@ -667,15 +647,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         InitKeyController();
         ghDC = GetDC(hWnd);
-        (*g_sample)->GetThread()->PushCallback(&createGLContext);
-        (*g_sample)->GetThread()->RunOneTime(true);
-        Wait();
+        g_sample->GetThread()->PushCallback(&createGLContext);
 
         GetClientRect(hWnd, &rect);
             
-        (*g_sample)->GetThread()->PushCallback(&initializeShaderProgram,(GLsizei) rect.right,(GLsizei) rect.bottom);
-        (*g_sample)->GetThread()->RunOneTime(true);
-        Wait();
+        g_sample->GetThread()->PushCallback(&initializeShaderProgram,(GLsizei) rect.right,(GLsizei) rect.bottom);
+        g_sample->GetThread()->Dispatch();
+        g_sample->GetThread()->Wait();
 
         m_isInitDone = true;
     }
@@ -690,7 +668,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
             break;
         case IDM_EXIT:
-        if (MessageBoxA(0, "Do you want to exit game?", "Warning", MB_YESNO) == IDYES)
+        //if (MessageBoxA(0, "Do you want to exit game?", "Warning", MB_YESNO) == IDYES)
         {
             ExitGame(hWnd);
         }
@@ -700,22 +678,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (!m_isWaiting)
             {
                 m_isWaiting = true;
-                utils::WorkerThread t;
-                t.CreateWorkerThread([&]() {
+                std::shared_ptr<utils::WorkerThread<>> t = utils::WorkerThread<>::make_shared_with_null_deleter();
+                t->CreateWorkerThread([&]()
+                {
                     utils::Log::d("Debug", "Meter Performance");
-                    double result = Calc_pi_MT(1E9);
+                    double result = Calc_pi_MT(1E10);
                     DEBUG_LOG("test: {}", result);
                     MessageBoxA(0, FORMAT("Pi: {}", result), "Result", MB_SERVICE_NOTIFICATION);
                     m_isWaiting = false;
-                    });
-                t.Detach();
+                }).expect("Create Thread Failed")->Detach(t);
             }
         }
         break;
         case IDM_PAUSE:
         {
-            /*m_isPause = !(*g_sample)->GetThread()->IsPaused();
-            (*g_sample)->GetThread()->Pause(m_isPause);*/
+            /*m_isPause = !g_sample->GetThread()->IsPaused();
+            g_sample->GetThread()->Pause(m_isPause);*/
         }
         default:
             return DefWindowProc(hWnd, message, wParam, lParam);
@@ -724,14 +702,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     break;
     case WM_MOUSEMOVE:
         POINTS posCursor = MAKEPOINTS(lParam);
-        MouseCallback(hWnd, posCursor.x, posCursor.y);
+        if (posCursor.x <= 0 || posCursor.y <= 0 || posCursor.x >= m_ctxWidth || posCursor.y >= m_ctxHeight)
+        {
+            SetMiddleCursorPos(hWnd);
+            firstMouse = true;
+            return DefWindowProc(hWnd, message, wParam, lParam);
+        }
+        mainThreadQueue.PushCallback(&MouseCallback, hWnd, posCursor.x, posCursor.y);
     break;
     case WM_MOUSEWHEEL:
         zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
-        ScrollCallback(hWnd, zDelta);
+        g_sample->GetThread()->PushCallback(&ScrollCallback, hWnd, zDelta);
     break;
     case WM_KEYDOWN:
-        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::UP)))
+        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::UP)))
         {
             if (!isKeyPressed[VKEY::UP])
             {
@@ -741,7 +725,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 calcThread.Dispatch();
             }
         }
-        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::LEFT)))
+        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::LEFT)))
         {
             if (!isKeyPressed[VKEY::LEFT])
             {
@@ -751,7 +735,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 calcThread.Dispatch();
             }
         }
-        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::DOWN)))
+        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::DOWN)))
         {
             if (!isKeyPressed[VKEY::DOWN])
             {
@@ -761,7 +745,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 calcThread.Dispatch();
             }
         }
-        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::RIGHT)))
+        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::RIGHT)))
         {
             if (!isKeyPressed[VKEY::RIGHT])
             {
@@ -777,22 +761,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
     break;
     case WM_KEYUP:
-        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::UP)))
+        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::UP)))
         {
             isKeyPressed[VKEY::UP] = false;
             calcThread.CleanResults();
         }
-        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::LEFT)))
+        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::LEFT)))
         {
             isKeyPressed[VKEY::LEFT] = false;
             calcThread.CleanResults();
         }
-        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::DOWN)))
+        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::DOWN)))
         {
             isKeyPressed[VKEY::DOWN] = false;
             calcThread.CleanResults();
         }
-        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::RIGHT)))
+        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::RIGHT)))
         {
             isKeyPressed[VKEY::RIGHT] = false;
             calcThread.CleanResults();
@@ -801,7 +785,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
             isKeyPressed[VKEY::SHIFT] = false;
         }
-        if ((*g_sample)->IsAny(wParam, GetVKeyMapping(VKEY::LIGHTING)))
+        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::LIGHTING)))
         {
             bool isLightOn = lightColor == glm::vec3(1.0f);
             lightColor = isLightOn ? glm::vec3(0.0f) : glm::vec3(1.0f);
@@ -834,9 +818,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)
         {
             GetClientRect(hWnd, &rect);
-            (*g_sample)->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE, 1);
-            (*g_sample)->GetThread()->PushCallback(&resize,(GLsizei) rect.right, (GLsizei) rect.bottom);
-            (*g_sample)->GetThread()->Dispatch();
+            g_sample->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE, 1);
+            g_sample->GetThread()->PushCallback(&resize,(GLsizei) rect.right, (GLsizei) rect.bottom);
+            g_sample->GetThread()->Dispatch();
         }
     }
     break;
@@ -893,22 +877,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     return DefWindowProc(hWnd, message, wParam, lParam);
     }
     return 0;
-}
-
-void Wait()
-{
-    std::unique_lock<std::mutex> lk_guard(m_mutex);
-    m_isWaiting = true;
-    cv.wait(lk_guard, [&] {return !m_isWaiting; });
-}
-
-void StopWaiting()
-{
-    {
-        std::lock_guard<std::mutex> lk_guard(m_mutex);
-        m_isWaiting = false;
-    }
-    cv.notify_one();
 }
 
 // Message handler for about box.
@@ -984,20 +952,18 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 void ExitGame(HWND hWnd)
 {
     m_isExiting = true;
-    (*g_sample)->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE);
     // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------
-    (*g_sample)->GetThread()->PushCallback(&CleanResource);
+    g_sample->GetThread()->PushCallback(&CleanResource);
 
     if (ghRC)
     {
-        (*g_sample)->GetThread()->PushCallback(&wglDeleteContext, (HGLRC) ghRC);
+        g_sample->GetThread()->PushCallback(&wglDeleteContext, (HGLRC) ghRC);
     }
     if (ghDC)
     {
-        (*g_sample)->GetThread()->PushCallback(&ReleaseDC, (HWND) hWnd, (HDC) ghDC);
+        g_sample->GetThread()->PushCallback(&ReleaseDC, (HWND) hWnd, (HDC) ghDC);
     }
-    (*g_sample)->GetThread()->Dispatch();
     DestroyWindow(hWnd);
 }
 
@@ -1267,6 +1233,4 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 
     // uncomment this call to draw in wireframe polygons.
     //glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-
-    StopWaiting();
 }

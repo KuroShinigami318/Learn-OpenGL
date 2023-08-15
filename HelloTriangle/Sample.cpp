@@ -1,13 +1,11 @@
 #include "Sample.h"
-#include <format>
-#include <cmath>
 
 extern GLvoid drawScene(DX::StepTimer const& timer, const GLsizei& ctxWidth, const GLsizei& ctxHeight);
 
 Sample::Sample() : m_frame(0)
 {
-	renderThread = std::make_shared<utils::WorkerThread<void()>>(false, "Render Thread");
-	//SetFixedFPS(144);
+	renderThread = std::make_shared<utils::WorkerThread<void()>>(false, "Render Thread", utils::MODE::MESSAGE_QUEUE);
+	SetFixedFPS(144);
 }
 
 Sample::~Sample()

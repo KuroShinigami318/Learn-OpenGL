@@ -51,6 +51,12 @@
     <ClInclude Include="common\Utils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="common\result.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="common\MessageQueue.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="HelloTriangle.cpp">
@@ -87,6 +93,9 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="common\WorkerThread.inl">
+      <Filter>Header Files</Filter>
+    </None>
+    <None Include="common\MessageQueue.inl">
       <Filter>Header Files</Filter>
     </None>
   </ItemGroup>

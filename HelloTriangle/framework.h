@@ -3,6 +3,7 @@
 //
 
 #pragma once
+//#define ENABLE_WRITE_LOG
 
 #include "targetver.h"
 #define WIN32_LEAN_AND_MEAN             // Exclude rarely-used stuff from Windows headers
@@ -18,3 +19,5 @@
 #include <future>
 #include <optional>
 #include <regex>
+#include "common/WorkerThread.h"
+#include "common/Log.h"

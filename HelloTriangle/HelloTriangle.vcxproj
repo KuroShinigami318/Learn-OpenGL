@@ -164,7 +164,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="common\Log.h" />
+    <ClInclude Include="common\MessageQueue.h" />
     <ClInclude Include="common\pch.h" />
+    <ClInclude Include="common\result.h" />
     <ClInclude Include="common\StepTimer.h" />
     <ClInclude Include="common\Utils.h" />
     <ClInclude Include="common\WorkerThread.h" />
@@ -192,6 +194,7 @@
     <Image Include="small.ico" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="common\MessageQueue.inl" />
     <None Include="common\WorkerThread.inl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

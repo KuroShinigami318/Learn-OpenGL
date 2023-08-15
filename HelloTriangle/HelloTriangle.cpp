@@ -356,9 +356,9 @@ GLvoid resize(GLsizei width, GLsizei height)
 {
     m_ctxWidth = width;
     m_ctxHeight = height;
+    g_sample->OnResize(m_ctxWidth, m_ctxHeight);
     glViewport(0, 0, width, height);
     g_sample->GetThread()->ChangeMode(utils::MODE::UPDATE_CALLBACK);
-    g_sample->ResetCallbackRenderThread(m_ctxWidth, m_ctxHeight);
     g_sample->GetThread()->Pause(m_isPause);
 }
 
@@ -647,6 +647,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         InitKeyController();
         ghDC = GetDC(hWnd);
+        g_sample->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE, 2);
         g_sample->GetThread()->PushCallback(&createGLContext);
 
         GetClientRect(hWnd, &rect);
@@ -712,7 +713,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     break;
     case WM_MOUSEWHEEL:
         zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
-        g_sample->GetThread()->PushCallback(&ScrollCallback, hWnd, zDelta);
+        mainThreadQueue.PushCallback(&ScrollCallback, hWnd, zDelta);
     break;
     case WM_KEYDOWN:
         if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::UP)))
@@ -954,6 +955,7 @@ void ExitGame(HWND hWnd)
     m_isExiting = true;
     // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------
+    g_sample->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE);
     g_sample->GetThread()->PushCallback(&CleanResource);
 
     if (ghRC)
@@ -964,6 +966,8 @@ void ExitGame(HWND hWnd)
     {
         g_sample->GetThread()->PushCallback(&ReleaseDC, (HWND) hWnd, (HDC) ghDC);
     }
+    g_sample->GetThread()->Dispatch();
+    g_sample->GetThread()->Wait();
     DestroyWindow(hWnd);
 }
 

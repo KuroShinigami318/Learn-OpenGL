@@ -20,7 +20,8 @@ public:
 
 	DX::StepTimer GetTimer();
 
-	void Tick(const GLsizei& ctxWidth, const GLsizei& ctxHeight);
+	void Tick();
+	void OnResize(const GLsizei& ctxWidth, const GLsizei& ctxHeight);
 
 	// Messages
 	void OnSuspending();
@@ -28,7 +29,7 @@ public:
 
 	utils::WorkerThread<void()>* GetThread();
 
-	void ResetCallbackRenderThread(const GLsizei& ctxWidth, const GLsizei& ctxHeight);
+	void ResetCallbackRenderThread();
 
 	bool IsAny(int value, std::vector<int> list);
 
@@ -42,6 +43,7 @@ private:
 	uint64_t                                    m_lastFrame;
 	float										m_preUpdateTime;
 	DX::StepTimer                               m_timer;
+	GLsizei										m_ctxWidth, m_ctxHeight;
 	// Render Thread
 	std::shared_ptr<utils::WorkerThread<void()>> renderThread;
 };

@@ -4,7 +4,8 @@ extern GLvoid drawScene(DX::StepTimer const& timer, const GLsizei& ctxWidth, con
 
 Sample::Sample() : m_frame(0)
 {
-	renderThread = std::make_shared<utils::WorkerThread<void()>>(false, "Render Thread", utils::MODE::MESSAGE_QUEUE);
+	renderThread = std::make_shared<utils::WorkerThread<void()>>(false, "Render Thread", utils::MODE::UPDATE_CALLBACK);
+	ResetCallbackRenderThread();
 	SetFixedFPS(144);
 }
 
@@ -18,14 +19,20 @@ DX::StepTimer Sample::GetTimer()
 	return m_timer;
 }
 
-void Sample::Tick(const GLsizei& ctxWidth, const GLsizei& ctxHeight)
+void Sample::Tick()
 {
 	m_timer.Tick([&]()
 	{
 		Update(m_timer);
-		drawScene(m_timer, ctxWidth, ctxHeight);
+		drawScene(m_timer, m_ctxWidth, m_ctxHeight);
 	});
 	m_frame++;
+}
+
+void Sample::OnResize(const GLsizei& ctxWidth, const GLsizei& ctxHeight)
+{
+	m_ctxWidth = ctxWidth;
+	m_ctxHeight = ctxHeight;
 }
 
 void Sample::Update(DX::StepTimer const&)
@@ -57,9 +64,9 @@ utils::WorkerThread<void()>* Sample::GetThread()
 	return renderThread.get();
 }
 
-void Sample::ResetCallbackRenderThread(const GLsizei& ctxWidth, const GLsizei& ctxHeight)
+void Sample::ResetCallbackRenderThread()
 {
-	utils::WorkerThreadERR result = renderThread->PushCallback(&Sample::Tick, this, ctxWidth, ctxHeight);
+	utils::WorkerThreadERR result = renderThread->PushCallback(&Sample::Tick, this);
 	if (result != utils::WorkerThreadERR::SUCCESSS)
 	{
 		utils::Log::e("Sample::ResetCallbackRenderThread", FORMAT("Error in pushing callback to render thread with error code [{}]", utils::WorkerThreadERRCode[(int)result]));

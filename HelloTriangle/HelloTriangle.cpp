@@ -241,7 +241,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             if (!isSignalSuspend)
             {
                 g_sample->GetThread()->Dispatch();
+                calcThread.Dispatch();
                 mainThreadQueue.Dispatch();
+            }
+            else
+            {
+                Sleep(utils::k_updateIntervalMilliseconds);
             }
         }
     }
@@ -433,15 +438,19 @@ double Calc_pi_MT(int n)
 {
     double result = 0.0;
     unsigned int CONCURRENCY = std::thread::hardware_concurrency();
+    std::vector<utils::MessageHandle<double>> results;
     for (unsigned int i = 0; i < CONCURRENCY; i++)
     {
-        calcThread.PushCallback(&Calc_pi, n, i, CONCURRENCY);
+        utils::MessageHandle<double> result = calcThread.PushCallback(&Calc_pi, n, i, CONCURRENCY);
+        results.push_back(std::move(result));
     }
-    calcThread.Dispatch();
-    calcThread.Wait();
-    while (!calcThread.IsEmptyResult())
+    for (utils::MessageHandle<double>& futureResult : results)
     {
-        result += calcThread.PopResult();
+        Result<double, utils::MessageHandleERR> messageHandleResult = futureResult.GetResult();
+        if (messageHandleResult.isOk())
+        {
+            result += messageHandleResult.unwrap();
+        }
     }
     return result;
 }
@@ -723,7 +732,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 cameraFront = cameraDirect - cameraPos;
                 calcThread.PushCallback(Move, VKEY::UP);
                 isKeyPressed[VKEY::UP] = true;
-                calcThread.Dispatch();
             }
         }
         if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::LEFT)))
@@ -733,7 +741,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 cameraFront = cameraDirect - cameraPos;
                 calcThread.PushCallback(Move, VKEY::LEFT);
                 isKeyPressed[VKEY::LEFT] = true;
-                calcThread.Dispatch();
             }
         }
         if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::DOWN)))
@@ -743,7 +750,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 cameraFront = cameraDirect - cameraPos;
                 calcThread.PushCallback(Move, VKEY::DOWN);
                 isKeyPressed[VKEY::DOWN] = true;
-                calcThread.Dispatch();
             }
         }
         if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::RIGHT)))
@@ -753,7 +759,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 cameraFront = cameraDirect - cameraPos;
                 calcThread.PushCallback(Move, VKEY::RIGHT);
                 isKeyPressed[VKEY::RIGHT] = true;
-                calcThread.Dispatch();
             }
         }
         if (wParam == VK_SHIFT && !isKeyPressed[VKEY::SHIFT])
@@ -765,22 +770,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::UP)))
         {
             isKeyPressed[VKEY::UP] = false;
-            calcThread.CleanResults();
         }
         if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::LEFT)))
         {
             isKeyPressed[VKEY::LEFT] = false;
-            calcThread.CleanResults();
         }
         if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::DOWN)))
         {
             isKeyPressed[VKEY::DOWN] = false;
-            calcThread.CleanResults();
         }
         if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::RIGHT)))
         {
             isKeyPressed[VKEY::RIGHT] = false;
-            calcThread.CleanResults();
         }
         if (wParam == VK_SHIFT)
         {

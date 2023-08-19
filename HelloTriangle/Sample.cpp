@@ -66,10 +66,10 @@ utils::WorkerThread<void()>* Sample::GetThread()
 
 void Sample::ResetCallbackRenderThread()
 {
-	utils::WorkerThreadERR result = renderThread->PushCallback(&Sample::Tick, this);
-	if (result != utils::WorkerThreadERR::SUCCESSS)
+	utils::MessageHandle result = renderThread->PushCallback(&Sample::Tick, this);
+	if (result.IsError())
 	{
-		utils::Log::e("Sample::ResetCallbackRenderThread", FORMAT("Error in pushing callback to render thread with error code [{}]", utils::WorkerThreadERRCode[(int)result]));
+		utils::Log::e("Sample::ResetCallbackRenderThread", FORMAT("Error in pushing callback to render thread with error code: {}", magic_enum::enum_name(result.GetError())));
 	}
 }
 

@@ -1,9 +1,8 @@
 // HelloTriangle.cpp : Defines the entry point for the application.
 //
 #include "framework.h"
-#include "common/MessageQueue.h"
 #include "HelloTriangle.h"
-#include "Sample.h"
+#include "Game.h"
 #include "common/StepTimer.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
@@ -12,6 +11,7 @@
 //#include <glad/glad_wgl.h>
 #include "lib/bel_ImgLoader/include/stb_image.h"
 //#include "lib/bel_lodepng/include/lodepng.h"
+#include "ApplicationContext.h"
 
 #define MAX_LOADSTRING 100
 
@@ -51,18 +51,19 @@ WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 HDC   ghDC;
 HGLRC ghRC;
 GLsizei m_ctxWidth, m_ctxHeight;
-std::shared_ptr<Sample> g_sample;
-std::mutex m_mutex;
-std::unique_ptr<utils::WorkerThread<void()>> registerNotify;
-std::unique_ptr<utils::WorkerThread<void()>> processLifeCycle;
+std::unique_ptr<IApplicationContext> ctx;
+ApplicationContext* applicationCtx;
+std::shared_ptr<Game> g_game;
 utils::WorkerThread<double()> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, 50, true, 4);
 utils::MessageQueue mainThreadQueue;
-HANDLE g_plmSuspendComplete = nullptr;
-HANDLE g_plmSignalResume = nullptr;
-PAPPSTATE_REGISTRATION hPLM = {};
-bool m_isExiting, m_isInitDone, m_isPause, isSignalSuspend, m_isWaiting;
+bool m_isExiting, m_isPause, isSignalSuspend, m_isWaiting, m_isInitDone;
 bool firstMouse = true;
 std::unordered_map<VKEY, bool> isKeyPressed;
+struct SignalKey;
+std::vector<utils::Connection> m_connections;
+utils::Signal<void(bool&), SignalKey> sig_onWaitingChanged;
+utils::Signal<void(), SignalKey> sig_onExport;
+utils::Signal<void(utils::WorkerThread<void()>&), SignalKey> sig_threadSyncFlush;
 
 #define BLACK_INDEX     0 
 #define RED_INDEX       13 
@@ -157,10 +158,13 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
+double              Calc_pi_MT(int n);
+VKEY                GetVKeyMapping(int i_key);
+double              Move(VKEY move);
 int                 loadOpenGLFunctions();
 void                ExitGame(HWND hWnd);
-GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight);
-GLvoid drawScene(DX::StepTimer const& timer);
+GLvoid              initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight);
+GLvoid              drawScene(DX::StepTimer const& timer);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     _In_opt_ HINSTANCE hPrevInstance,
@@ -171,42 +175,59 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
 
     // TODO: Place code here.
-    g_sample = std::make_shared<Sample>();
-    {
-        utils::WorkerThread<void()> trashThread(true, g_sample, "Trash Thread");
-    }
-    registerNotify = std::make_unique<utils::WorkerThread<void()>>(false, "State Notification Thread", utils::MODE::MESSAGE_QUEUE);
-    processLifeCycle = std::make_unique<utils::WorkerThread<void()>>(true, "Life Cycle Update Thread");
-    processLifeCycle->CreateWorkerThread([&]() {
-        while (!m_isExiting && m_isInitDone)
-        {
-            if (isSignalSuspend)
-            {
-                g_sample->OnSuspending();
-                // Complete deferral
-                SetEvent(g_plmSuspendComplete);
-                (void)WaitForSingleObject(g_plmSignalResume, INFINITE);
-                {
-                    std::lock_guard<std::mutex> lk_guard(m_mutex);
-                    isSignalSuspend = false;
-                }
-                if (!m_isPause)
-                {
-                    g_sample->OnResuming();
-                    for (VKEY iterKey = VKEY::_BEGIN; iterKey != VKEY::_END; ++iterKey)
-                    {
-                        isKeyPressed[iterKey] = false;
-                    }
-                }
-            }
+    ctx = std::make_unique<ApplicationContext>();
+    applicationCtx = static_cast<ApplicationContext*>(ctx.get());
+    assert(applicationCtx);
+    g_game = std::make_shared<Game>(*ctx);
 
-            Sleep(1);
+    m_connections.push_back(g_game->sig_onTick.Connect(&drawScene));
+    m_connections.push_back(sig_onWaitingChanged.Connect([](bool& o_isWaiting)
+    {
+        o_isWaiting = !o_isWaiting;
+    }));
+    m_connections.push_back(sig_onExport.Connect([&]()
+    {
+        if (!m_isWaiting)
+        {
+            utils::Access<SignalKey>(sig_onWaitingChanged).Emit(m_isWaiting);
+            utils::WorkerThread t;
+            t.CreateWorkerThread([&]()
+            {
+                DEBUG_LOG("Meter Performance");
+                double result = Calc_pi_MT(1E10);
+                DEBUG_LOG("test: {}", result);
+                MessageBoxA(0, utils::Format("Pi: {}", result).c_str(), "Result", MB_SERVICE_NOTIFICATION);
+                utils::Access<SignalKey>(sig_onWaitingChanged).Emit(m_isWaiting);
+                return 0;
+            }).expect("")->Detach();
         }
-    });
-    g_plmSuspendComplete = CreateEventEx(nullptr, nullptr, 0, EVENT_MODIFY_STATE | SYNCHRONIZE);
-    g_plmSignalResume = CreateEventEx(nullptr, nullptr, 0, EVENT_MODIFY_STATE | SYNCHRONIZE);
-    if (!g_plmSuspendComplete || !g_plmSignalResume)
-        return 1;
+    }));
+    m_connections.push_back(ctx->sig_onKeyDown.Connect([](int key)
+    {
+        VKEY vkey = GetVKeyMapping(key);
+        if (utils::Contains(vkey, { VKEY::DOWN, VKEY::LEFT, VKEY::RIGHT, VKEY::UP }))
+        {
+            if (!isKeyPressed[vkey])
+            {
+                cameraFront = cameraDirect - cameraPos;
+                calcThread.PushCallback(Move, vkey);
+                isKeyPressed[vkey] = true;
+            }
+        }
+    }));
+    m_connections.push_back(ctx->sig_onKeyUp.Connect([](int key)
+    {
+        VKEY vkey = GetVKeyMapping(key);
+        if (utils::Contains(vkey, { VKEY::DOWN, VKEY::LEFT, VKEY::RIGHT, VKEY::UP }))
+        {
+            isKeyPressed[vkey] = false;
+        }
+    }));
+    m_connections.push_back(sig_threadSyncFlush.Connect([](utils::WorkerThread<void()>& sync_thread)
+    {
+        sync_thread.Dispatch();
+        sync_thread.Wait();
+    }));
 
     // Initialize global strings
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
@@ -237,10 +258,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         else
         {
             // main loop here
-            std::lock_guard<std::mutex> lk_guard(m_mutex);
-            if (!isSignalSuspend)
+            if (!(isSignalSuspend || m_isPause))
             {
-                g_sample->GetThread()->Dispatch();
+                utils::Access<SignalKey>(sig_threadSyncFlush).Emit(*g_game->GetThread());
                 calcThread.Dispatch();
                 mainThreadQueue.Dispatch();
             }
@@ -252,15 +272,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }
 
     utils::Log::d("Main Thread", "Exiting Game");
-    g_sample.reset();
+    g_game.reset();
     utils::Log::d("Main Thread", "Exited Render thread");
-    registerNotify.reset();
-    utils::Log::d("Main Thread", "Exited notify thread");
-    processLifeCycle.reset();
-    utils::Log::d("Main Thread", "Exited processLifeCycle thread");
-
-    CloseHandle(g_plmSuspendComplete);
-    CloseHandle(g_plmSignalResume);
 
     return (int) msg.wParam;
 }
@@ -296,6 +309,15 @@ std::vector<int> GetVKeyMapping(VKEY i_vkey)
         result.push_back(const_iter->second);
     }
     return result;
+}
+
+VKEY GetVKeyMapping(int i_key)
+{
+    auto vkeyIt = std::find_if(key_mapping.begin(), key_mapping.end(), [i_key](const std::pair<VKEY, int>& i_vkeyPair)
+    {
+        return i_vkeyPair.second == i_key;
+    });
+    return vkeyIt != key_mapping.end() ? vkeyIt->first : VKEY::_END;
 }
 
 void SetVKeyMapping(VKEY i_vkey, int i_mapKey)
@@ -351,7 +373,6 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     {
         return FALSE;
     }
-
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
     return TRUE;
@@ -361,10 +382,9 @@ GLvoid resize(GLsizei width, GLsizei height)
 {
     m_ctxWidth = width;
     m_ctxHeight = height;
-    g_sample->OnResize(m_ctxWidth, m_ctxHeight);
     glViewport(0, 0, width, height);
-    g_sample->GetThread()->ChangeMode(utils::MODE::UPDATE_CALLBACK);
-    g_sample->GetThread()->Pause(m_isPause);
+    g_game->GetThread()->ChangeMode(utils::MODE::UPDATE_CALLBACK);
+    g_game->GetThread()->Pause(m_isPause);
 }
 
 void createGLContext()
@@ -451,73 +471,75 @@ double Calc_pi_MT(int n)
         {
             result += messageHandleResult.unwrap();
         }
+        else
+        {
+            DEBUG_LOG("error: {}", messageHandleResult.unwrapErr());
+        }
     }
     return result;
 }
 
 double Move(VKEY move)
 {
-    return [&](VKEY move) -> double {
-        float deltaTime = 0;
-        float cameraSpeed = 0;
-        float timeSleep = 0;
-        auto currentTP = std::chrono::system_clock::now();
-        auto preUpdateTP = currentTP;
-        std::chrono::duration<double> elapsed_seconds = currentTP - preUpdateTP;
-        while (!m_isExiting && isKeyPressed[move])
+    float deltaTime = 0;
+    float cameraSpeed = 0;
+    float timeSleep = 0;
+    auto currentTP = std::chrono::system_clock::now();
+    auto preUpdateTP = currentTP;
+    std::chrono::duration<double> elapsed_seconds = currentTP - preUpdateTP;
+    while (!m_isExiting && isKeyPressed[move])
+    {
+        deltaTime = g_game->GetTimer().GetElapsedSeconds();
+        currentTP = std::chrono::system_clock::now();
+        elapsed_seconds = currentTP - preUpdateTP;
+        if (elapsed_seconds.count() < deltaTime)
         {
-            deltaTime = g_sample->GetTimer().GetElapsedSeconds();
-            currentTP = std::chrono::system_clock::now();
-            elapsed_seconds = currentTP - preUpdateTP;
-            if (elapsed_seconds.count() < deltaTime)
-            {
-                int sleepTime = static_cast<int> (elapsed_seconds.count() * 1E6);
-                std::this_thread::sleep_for(std::chrono::microseconds(sleepTime));
-            }
-            preUpdateTP = currentTP;
-            cameraSpeed = k_speed * elapsed_seconds.count();
-            switch (move)
-            {
-            case VKEY::UP:
-                if (isKeyPressed[VKEY::SHIFT] && !(isKeyPressed[VKEY::LEFT] || isKeyPressed[VKEY::RIGHT]))
-                {
-                    cameraSpeed = 2.5 * k_speed * elapsed_seconds.count();
-                }
-                if (isKeyPressed[VKEY::DOWN])
-                {
-                    cameraSpeed = 0;
-                }
-                cameraPos += cameraSpeed * cameraFront;
-                cameraDirect = cameraPos + cameraFront;
-            break;
-            case VKEY::LEFT:
-                if (isKeyPressed[VKEY::RIGHT])
-                {
-                    cameraSpeed = 0;
-                }
-                cameraPos -= Right * cameraSpeed;
-                cameraDirect = cameraPos + cameraFront;
-            break;
-            case VKEY::DOWN:
-                if (isKeyPressed[VKEY::UP])
-                {
-                    cameraSpeed = 0;
-                }
-                cameraPos -= cameraSpeed * cameraFront;
-                cameraDirect = cameraPos + cameraFront;
-            break;
-            case VKEY::RIGHT:
-                if (isKeyPressed[VKEY::LEFT])
-                {
-                    cameraSpeed = 0;
-                }
-                cameraPos += Right * cameraSpeed;
-                cameraDirect = cameraPos + cameraFront;
-            break;
-            }
+            int sleepTime = static_cast<int> (elapsed_seconds.count() * 1E6);
+            std::this_thread::sleep_for(std::chrono::microseconds(sleepTime));
         }
-        return 0;
-    }(move);
+        preUpdateTP = currentTP;
+        cameraSpeed = k_speed * elapsed_seconds.count();
+        switch (move)
+        {
+        case VKEY::UP:
+            if (isKeyPressed[VKEY::SHIFT] && !(isKeyPressed[VKEY::LEFT] || isKeyPressed[VKEY::RIGHT]))
+            {
+                cameraSpeed = 2.5 * k_speed * elapsed_seconds.count();
+            }
+            if (isKeyPressed[VKEY::DOWN])
+            {
+                cameraSpeed = 0;
+            }
+            cameraPos += cameraSpeed * cameraFront;
+            cameraDirect = cameraPos + cameraFront;
+        break;
+        case VKEY::LEFT:
+            if (isKeyPressed[VKEY::RIGHT])
+            {
+                cameraSpeed = 0;
+            }
+            cameraPos -= Right * cameraSpeed;
+            cameraDirect = cameraPos + cameraFront;
+        break;
+        case VKEY::DOWN:
+            if (isKeyPressed[VKEY::UP])
+            {
+                cameraSpeed = 0;
+            }
+            cameraPos -= cameraSpeed * cameraFront;
+            cameraDirect = cameraPos + cameraFront;
+        break;
+        case VKEY::RIGHT:
+            if (isKeyPressed[VKEY::LEFT])
+            {
+                cameraSpeed = 0;
+            }
+            cameraPos += Right * cameraSpeed;
+            cameraDirect = cameraPos + cameraFront;
+        break;
+        }
+    }
+    return 0;
 }
 
 void SetMiddleCursorPos(HWND hWnd)
@@ -656,16 +678,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         InitKeyController();
         ghDC = GetDC(hWnd);
-        g_sample->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE, 2);
-        g_sample->GetThread()->PushCallback(&createGLContext);
+        g_game->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE, 2);
+        g_game->GetThread()->PushCallback(&createGLContext);
 
         GetClientRect(hWnd, &rect);
             
-        g_sample->GetThread()->PushCallback(&initializeShaderProgram,(GLsizei) rect.right,(GLsizei) rect.bottom);
-        g_sample->GetThread()->Dispatch();
-        g_sample->GetThread()->Wait();
-
-        m_isInitDone = true;
+        g_game->GetThread()->PushCallback(&initializeShaderProgram,(GLsizei) rect.right,(GLsizei) rect.bottom);
+        m_isInitDone = false;
     }
     break;
     case WM_COMMAND:
@@ -685,25 +704,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
         case IDM_EXPORT:
         {
-            if (!m_isWaiting)
-            {
-                m_isWaiting = true;
-                std::shared_ptr<utils::WorkerThread<>> t = utils::WorkerThread<>::make_shared_with_null_deleter();
-                t->CreateWorkerThread([&]()
-                {
-                    utils::Log::d("Debug", "Meter Performance");
-                    double result = Calc_pi_MT(1E10);
-                    DEBUG_LOG("test: {}", result);
-                    MessageBoxA(0, FORMAT("Pi: {}", result), "Result", MB_SERVICE_NOTIFICATION);
-                    m_isWaiting = false;
-                }).expect("Create Thread Failed")->Detach(t);
-            }
+            utils::Access<SignalKey>(sig_onExport).Emit();
         }
         break;
         case IDM_PAUSE:
         {
-            /*m_isPause = !g_sample->GetThread()->IsPaused();
-            g_sample->GetThread()->Pause(m_isPause);*/
+            m_isPause = !g_game->GetThread()->IsPaused();
+            g_game->GetThread()->Pause(m_isPause);
         }
         default:
             return DefWindowProc(hWnd, message, wParam, lParam);
@@ -725,69 +732,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         mainThreadQueue.PushCallback(&ScrollCallback, hWnd, zDelta);
     break;
     case WM_KEYDOWN:
-        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::UP)))
-        {
-            if (!isKeyPressed[VKEY::UP])
-            {
-                cameraFront = cameraDirect - cameraPos;
-                calcThread.PushCallback(Move, VKEY::UP);
-                isKeyPressed[VKEY::UP] = true;
-            }
-        }
-        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::LEFT)))
-        {
-            if (!isKeyPressed[VKEY::LEFT])
-            {
-                cameraFront = cameraDirect - cameraPos;
-                calcThread.PushCallback(Move, VKEY::LEFT);
-                isKeyPressed[VKEY::LEFT] = true;
-            }
-        }
-        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::DOWN)))
-        {
-            if (!isKeyPressed[VKEY::DOWN])
-            {
-                cameraFront = cameraDirect - cameraPos;
-                calcThread.PushCallback(Move, VKEY::DOWN);
-                isKeyPressed[VKEY::DOWN] = true;
-            }
-        }
-        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::RIGHT)))
-        {
-            if (!isKeyPressed[VKEY::RIGHT])
-            {
-                cameraFront = cameraDirect - cameraPos;
-                calcThread.PushCallback(Move, VKEY::RIGHT);
-                isKeyPressed[VKEY::RIGHT] = true;
-            }
-        }
+        applicationCtx->InvokeKeyDown(wParam);
         if (wParam == VK_SHIFT && !isKeyPressed[VKEY::SHIFT])
         {
             isKeyPressed[VKEY::SHIFT] = true;
         }
     break;
     case WM_KEYUP:
-        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::UP)))
-        {
-            isKeyPressed[VKEY::UP] = false;
-        }
-        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::LEFT)))
-        {
-            isKeyPressed[VKEY::LEFT] = false;
-        }
-        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::DOWN)))
-        {
-            isKeyPressed[VKEY::DOWN] = false;
-        }
-        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::RIGHT)))
-        {
-            isKeyPressed[VKEY::RIGHT] = false;
-        }
+        applicationCtx->InvokeKeyUp(wParam);
         if (wParam == VK_SHIFT)
         {
             isKeyPressed[VKEY::SHIFT] = false;
         }
-        if (g_sample->IsAny(wParam, GetVKeyMapping(VKEY::LIGHTING)))
+        if (g_game->IsAny(wParam, GetVKeyMapping(VKEY::LIGHTING)))
         {
             bool isLightOn = lightColor == glm::vec3(1.0f);
             lightColor = isLightOn ? glm::vec3(0.0f) : glm::vec3(1.0f);
@@ -820,9 +777,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)
         {
             GetClientRect(hWnd, &rect);
-            g_sample->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE, 1);
-            g_sample->GetThread()->PushCallback(&resize,(GLsizei) rect.right, (GLsizei) rect.bottom);
-            g_sample->GetThread()->Dispatch();
+            utils::WorkerThreadERR changeModeResult = g_game->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE, 1);
+            if (!g_game->GetThread()->IsEmptyQueue())
+            {
+                if (!m_isInitDone)
+                {
+                    utils::Access<SignalKey>(sig_threadSyncFlush).Emit(*g_game->GetThread());
+                    m_isInitDone = true;
+                }
+                g_game->GetThread()->Clear();
+            }
+            g_game->GetThread()->PushCallback(&resize,(GLsizei) rect.right, (GLsizei) rect.bottom);
         }
     }
     break;
@@ -832,33 +797,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
             isKeyPressed[VKEY::ALT] = false;
             LockCursor(true, hWnd);
-        }
-        else if (!isKeyPressed[VKEY::ALT])
-        {
-            LockCursor(false, hWnd);
-        }
-        registerNotify->PushCallback([&](WPARAM wParam) {
-            if (!m_isExiting)
+            isSignalSuspend = false;
+            if (!m_isPause)
             {
-                if (wParam == TRUE)
+                applicationCtx->Resume();
+                for (VKEY iterKey = VKEY::_BEGIN; iterKey != VKEY::_END; ++iterKey)
                 {
-                    SetEvent(g_plmSignalResume);
-                }
-                else
-                {
-                    ResetEvent(g_plmSuspendComplete);
-                    ResetEvent(g_plmSignalResume);
-                    {
-                        std::lock_guard<std::mutex> lk_guard(m_mutex);
-                        isSignalSuspend = true;
-                    }
-
-                    // To defer suspend, you must wait to exit this callback
-                    (void)WaitForSingleObject(g_plmSuspendComplete, INFINITE);
+                    isKeyPressed[iterKey] = false;
                 }
             }
-        }, wParam);
-        registerNotify->Dispatch();
+        }
+        else
+        {
+            isSignalSuspend = true;
+            applicationCtx->Suspend();
+            if (!isKeyPressed[VKEY::ALT])
+            {
+                LockCursor(false, hWnd);
+            }
+        }
     }
     break;
     case WM_DESTROY:
@@ -887,8 +844,10 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
     UNREFERENCED_PARAMETER(lParam);
     HWND hwndCtrl = NULL;
     std::string ambientStr{};
+    std::string fpsStr{};
     unsigned int result = 0;
     bool isValid = false;
+    float fps = g_game->GetTimer().GetFramesPerSecond();
     switch (message)
     {
     case WM_INITDIALOG:
@@ -904,7 +863,9 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
         hwndCtrl = GetDlgItem(hDlg, IDC_LIGHT);
         SendMessage(hwndCtrl, HKM_SETHOTKEY, MAKEWORD(GetVKeyMapping(VKEY::LIGHTING)[0], 0), 0);
         hwndCtrl = GetDlgItem(hDlg, IDC_EDIT1);
-        SetWindowTextA(hwndCtrl, FORMAT("{}", ambientStrength));
+        SetWindowTextA(hwndCtrl, utils::Format("{}", ambientStrength).c_str());
+        hwndCtrl = GetDlgItem(hDlg, IDC_EDIT2);
+        SetWindowTextA(hwndCtrl, utils::Format("{}", fps).c_str());
         return (INT_PTR)TRUE;
 
     case WM_COMMAND:
@@ -927,7 +888,7 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
             hwndCtrl = GetDlgItem(hDlg, IDC_LIGHT);
             wHotkey = (WORD)SendMessage(hwndCtrl, HKM_GETHOTKEY, 0, 0);
             SetVKeyMapping(VKEY::LIGHTING, wHotkey);
-            hwndCtrl = GetDlgItem(hDlg, IDC_EDIT1);{}
+            hwndCtrl = GetDlgItem(hDlg, IDC_EDIT1);
             result = GetWindowTextA(hwndCtrl, ambientStr.data(), 5);
             isValid = !std::regex_search(ambientStr.data(), std::regex("([^.0-9]+)"), std::regex_constants::match_any);
             if (result > 0 && isValid)
@@ -937,6 +898,18 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
             else
             {
                 ERROR_LOG("Get Ambient Strength Failed!");
+            }
+            hwndCtrl = GetDlgItem(hDlg, IDC_EDIT2);
+            result = GetWindowTextA(hwndCtrl, fpsStr.data(), 5);
+            isValid = !std::regex_search(fpsStr.data(), std::regex("([^.0-9]+)"), std::regex_constants::match_any);
+            if (result > 0 && isValid)
+            {
+                fps = std::stof(fpsStr);
+                applicationCtx->ChangeFPSLimit((short)fps);
+            }
+            else
+            {
+                ERROR_LOG("Get FPS Failed!");
             }
             EndDialog(hDlg, LOWORD(wParam));
             LockCursor(true, GetParent(hDlg));
@@ -956,23 +929,23 @@ void ExitGame(HWND hWnd)
     m_isExiting = true;
     // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------
-    g_sample->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE);
-    g_sample->GetThread()->PushCallback(&CleanResource);
+    g_game->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE);
+    g_game->GetThread()->PushCallback(&CleanResource);
 
     if (ghRC)
     {
-        g_sample->GetThread()->PushCallback(&wglDeleteContext, (HGLRC) ghRC);
+        g_game->GetThread()->PushCallback(&wglDeleteContext, (HGLRC) ghRC);
     }
     if (ghDC)
     {
-        g_sample->GetThread()->PushCallback(&ReleaseDC, (HWND) hWnd, (HDC) ghDC);
+        g_game->GetThread()->PushCallback(&ReleaseDC, (HWND) hWnd, (HDC) ghDC);
     }
-    g_sample->GetThread()->Dispatch();
-    g_sample->GetThread()->Wait();
+    g_game->GetThread()->Dispatch();
+    g_game->GetThread()->Wait();
     DestroyWindow(hWnd);
 }
 
-GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei const& ctxHeight)
+GLvoid drawScene(DX::StepTimer const& timer)
 {
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -986,7 +959,7 @@ GLvoid drawScene(DX::StepTimer const& timer, GLsizei const& ctxWidth, GLsizei co
     glm::mat4 view = glm::mat4(1.0f); // make sure to initialize matrix to identity matrix first
     //lightPos = cameraPos;
 
-    glm::mat4 projection = glm::perspective(glm::radians(fov), (float)ctxWidth / (float)ctxHeight, 0.1f, 100.0f);
+    glm::mat4 projection = glm::perspective(glm::radians(fov), (float)m_ctxWidth / (float)m_ctxHeight, 0.1f, 100.0f);
     glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projection));
     view = glm::lookAt(cameraPos, cameraDirect, cameraUp);
 

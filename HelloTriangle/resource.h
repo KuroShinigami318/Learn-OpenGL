@@ -19,6 +19,7 @@
 #define IDC_HOTKEY6                     1013
 #define IDC_LIGHT                       1013
 #define IDC_EDIT1                       1014
+#define IDC_EDIT2                       1015
 #define IDM_EXPORT                      32772
 #define IDM_PAUSE                       32774
 #define IDC_STATIC                      -1

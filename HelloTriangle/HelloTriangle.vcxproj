@@ -163,28 +163,29 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="ApplicationContext.h" />
     <ClInclude Include="common\Log.h" />
     <ClInclude Include="common\MessageQueue.h" />
     <ClInclude Include="common\pch.h" />
     <ClInclude Include="common\result.h" />
+    <ClInclude Include="common\Signal.h" />
     <ClInclude Include="common\StepTimer.h" />
     <ClInclude Include="common\Utils.h" />
     <ClInclude Include="common\WorkerThread.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="Game.h" />
     <ClInclude Include="HelloTriangle.h" />
     <ClInclude Include="lib\bel_ImgLoader\include\stb_image.h" />
     <ClInclude Include="lib\bel_lodepng\include\lodepng.h" />
     <ClInclude Include="Resource.h" />
-    <ClInclude Include="Sample.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="common\glad\src\glad.c" />
-    <ClCompile Include="common\Utils.cpp" />
-    <ClCompile Include="HelloTriangle.cpp" />
+    <ClCompile Include="Game.cpp" />
+    <ClCompile Include="main.cpp" />
     <ClCompile Include="lib\bel_ImgLoader\src\stb_image.cpp" />
     <ClCompile Include="lib\bel_lodepng\src\lodepng.cpp" />
-    <ClCompile Include="Sample.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="HelloTriangle.rc" />

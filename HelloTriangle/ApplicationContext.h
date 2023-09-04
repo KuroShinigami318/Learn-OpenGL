@@ -30,22 +30,22 @@ struct ApplicationContext : public IApplicationContext
 public:
 	void Suspend() override
 	{
-		utils::Access<IApplicationContext::SignalKey>(sig_onSuspend).Emit();
+		utils::Access<SignalKey>(sig_onSuspend).Emit();
 	}
 	void Resume() override
 	{
-		utils::Access<IApplicationContext::SignalKey>(sig_onResume).Emit();
+		utils::Access<SignalKey>(sig_onResume).Emit();
 	}
 	void InvokeKeyDown(int key) override
 	{
-		utils::Access<IApplicationContext::SignalKey>(sig_onKeyDown).Emit(key);
+		utils::Access<SignalKey>(sig_onKeyDown).Emit(key);
 	}
 	void InvokeKeyUp(int key) override
 	{
-		utils::Access<IApplicationContext::SignalKey>(sig_onKeyUp).Emit(key);
+		utils::Access<SignalKey>(sig_onKeyUp).Emit(key);
 	}
 	void ChangeFPSLimit(short fps) override
 	{
-		utils::Access<IApplicationContext::SignalKey>(sig_onFPSChanged).Emit(fps);
+		utils::Access<SignalKey>(sig_onFPSChanged).Emit(fps);
 	}
 };

@@ -1,11 +1,5 @@
 #pragma once
-#include "framework.h"
-#include <windows.h>
-#include <memory>
-#include <cstdint>
 #include "common/StepTimer.h"
-#include <glad/glad.h>
-#include <vector>
 
 struct IApplicationContext;
 
@@ -29,7 +23,7 @@ public:
 
 	bool IsAny(int value, std::vector<int> list);
 
-	utils::Signal<void(DX::StepTimer const&), SignalKey> sig_onTick;
+	utils::Signal<void(float), SignalKey> sig_onTick;
 
 private:
 	void Tick();
@@ -38,7 +32,7 @@ private:
 	void OnSuspending();
 	void OnResuming();
 	void SetFixedFPS(short i_fps);
-	void Update(DX::StepTimer const& timer);
+	void Update(float);
 	void OnRun()
 	{
 		Tick();
@@ -55,7 +49,7 @@ private:
 	DX::StepTimer                               m_timer;
 	float										m_preUpdateTime;
 	// Render Thread
-	std::shared_ptr<utils::WorkerThread<void()>> renderThread;
+	utils::unique_ref<utils::WorkerThread<void()>> renderThread;
 	utils::Signal<void(float), SignalKey>		sig_resetTimer;
 	std::vector<utils::Connection>				m_connections;
 };

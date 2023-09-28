@@ -10,14 +10,6 @@
 // Windows Header Files
 #include <windows.h>
 #include <Commctrl.h>
-#include <appnotify.h>
 // C RunTime Header Files
-#include <stdlib.h>
-#include <malloc.h>
-#include <memory.h>
-#include <tchar.h>
-#include <future>
-#include <optional>
 #include <regex>
-#include "common/WorkerThread.h"
-#include "common/Log.h"
+#include "common/common-utils.h"

@@ -53,8 +53,8 @@ HGLRC ghRC;
 GLsizei m_ctxWidth, m_ctxHeight;
 std::unique_ptr<IApplicationContext> ctx;
 ApplicationContext* applicationCtx;
-std::shared_ptr<Game> g_game;
-utils::WorkerThread<double()> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, 50, true, 4);
+std::unique_ptr<Game> g_game;
+utils::unique_ref<utils::WorkerThread<double()>> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, 50, true, 4);
 utils::MessageQueue mainThreadQueue;
 bool m_isExiting, m_isPause, isSignalSuspend, m_isWaiting, m_isInitDone;
 bool firstMouse = true;
@@ -76,7 +76,7 @@ const float divided = 1.0f / (float) divide;
 constexpr int max_scale = 200;
 constexpr int initial_up = max_scale / divide;
 int up = initial_up;
-bool isDown = false;
+float m_totalTicks = 0;
 unsigned int shaderProgram;
 unsigned int VBO, VAO, EBO, internalFormat;
 unsigned int lightCubeVAO;
@@ -164,7 +164,7 @@ double              Move(VKEY move);
 int                 loadOpenGLFunctions();
 void                ExitGame(HWND hWnd);
 GLvoid              initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight);
-GLvoid              drawScene(DX::StepTimer const& timer);
+GLvoid              drawScene(float deltaTime);
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     _In_opt_ HINSTANCE hPrevInstance,
@@ -178,7 +178,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     ctx = std::make_unique<ApplicationContext>();
     applicationCtx = static_cast<ApplicationContext*>(ctx.get());
     assert(applicationCtx);
-    g_game = std::make_shared<Game>(*ctx);
+    g_game = std::make_unique<Game>(*ctx);
 
     m_connections.push_back(g_game->sig_onTick.Connect(&drawScene));
     m_connections.push_back(sig_onWaitingChanged.Connect([](bool& o_isWaiting)
@@ -193,9 +193,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             utils::WorkerThread t;
             t.CreateWorkerThread([&]()
             {
-                DEBUG_LOG("Meter Performance");
+                DEBUG_LOG("Debug", "Meter Performance");
                 double result = Calc_pi_MT(1E10);
-                DEBUG_LOG("test: {}", result);
+                DEBUG_LOG("Debug", "test: {}", result);
                 MessageBoxA(0, utils::Format("Pi: {}", result).c_str(), "Result", MB_SERVICE_NOTIFICATION);
                 utils::Access<SignalKey>(sig_onWaitingChanged).Emit(m_isWaiting);
                 return 0;
@@ -210,7 +210,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             if (!isKeyPressed[vkey])
             {
                 cameraFront = cameraDirect - cameraPos;
-                calcThread.PushCallback(Move, vkey);
+                calcThread->PushCallback(Move, vkey);
                 isKeyPressed[vkey] = true;
             }
         }
@@ -261,7 +261,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             if (!(isSignalSuspend || m_isPause))
             {
                 utils::Access<SignalKey>(sig_threadSyncFlush).Emit(*g_game->GetThread());
-                calcThread.Dispatch();
+                calcThread->Dispatch();
                 mainThreadQueue.Dispatch();
             }
             else
@@ -274,6 +274,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     utils::Log::d("Main Thread", "Exiting Game");
     g_game.reset();
     utils::Log::d("Main Thread", "Exited Render thread");
+    calcThread.reset();
+    utils::Log::d("Main Thread", "Exited Calc thread pool");
+    utils::Log::Wait();
 
     return (int) msg.wParam;
 }
@@ -461,7 +464,7 @@ double Calc_pi_MT(int n)
     std::vector<utils::MessageHandle<double>> results;
     for (unsigned int i = 0; i < CONCURRENCY; i++)
     {
-        utils::MessageHandle<double> result = calcThread.PushCallback(&Calc_pi, n, i, CONCURRENCY);
+        utils::MessageHandle<double> result = calcThread->PushCallback(&Calc_pi, n, i, CONCURRENCY);
         results.push_back(std::move(result));
     }
     for (utils::MessageHandle<double>& futureResult : results)
@@ -473,7 +476,7 @@ double Calc_pi_MT(int n)
         }
         else
         {
-            DEBUG_LOG("error: {}", messageHandleResult.unwrapErr());
+            ERROR_LOG("Debug", "error: {}", messageHandleResult.unwrapErr());
         }
     }
     return result;
@@ -710,7 +713,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case IDM_PAUSE:
         {
             m_isPause = !g_game->GetThread()->IsPaused();
-            g_game->GetThread()->Pause(m_isPause);
+            m_isPause ? applicationCtx->Suspend() : applicationCtx->Resume();
         }
         default:
             return DefWindowProc(hWnd, message, wParam, lParam);
@@ -725,7 +728,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             firstMouse = true;
             return DefWindowProc(hWnd, message, wParam, lParam);
         }
-        mainThreadQueue.PushCallback(&MouseCallback, hWnd, posCursor.x, posCursor.y);
+        if (!m_isPause)
+        {
+            mainThreadQueue.PushCallback(&MouseCallback, hWnd, posCursor.x, posCursor.y);
+        }
     break;
     case WM_MOUSEWHEEL:
         zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
@@ -897,7 +903,7 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
             }
             else
             {
-                ERROR_LOG("Get Ambient Strength Failed!");
+                ERROR_LOG("About", "Get Ambient Strength Failed!");
             }
             hwndCtrl = GetDlgItem(hDlg, IDC_EDIT2);
             result = GetWindowTextA(hwndCtrl, fpsStr.data(), 5);
@@ -909,7 +915,7 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
             }
             else
             {
-                ERROR_LOG("Get FPS Failed!");
+                ERROR_LOG("About", "Get FPS Failed!");
             }
             EndDialog(hDlg, LOWORD(wParam));
             LockCursor(true, GetParent(hDlg));
@@ -945,8 +951,9 @@ void ExitGame(HWND hWnd)
     DestroyWindow(hWnd);
 }
 
-GLvoid drawScene(DX::StepTimer const& timer)
+GLvoid drawScene(float deltaTime)
 {
+    m_totalTicks += deltaTime;
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -968,9 +975,6 @@ GLvoid drawScene(DX::StepTimer const& timer)
     glm::mat4 model = glm::mat4(1.0f);
     glm::vec3 transformColor = glm::vec3(0.39f, 0.0f, 0.39f);
     // make sure to initialize matrix to identity matrix first
-    /*(up < max_scale && !isDown) ? ++up : isDown = true;
-    (up > (initial_up) && isDown) ? --up : isDown = false;
-    float scale = (up) * ((float) 1 / max_scale);*/
     //float scale = ((sin(timer.GetTotalSeconds()) + 1) * 0.5f * divided) + (1 - (double)divided);
     /*float ratio = ctxWidth * 1.0f / ctxHeight;
     float new_width = 1.0f, new_height = 1.0f;
@@ -1000,8 +1004,8 @@ GLvoid drawScene(DX::StepTimer const& timer)
     //front mini model
     float modelAspect = 0.4;
     float radius = 2.0f;
-    float miniModelX = static_cast<float>(sin(timer.GetTotalSeconds()) * radius);
-    float miniModelZ = static_cast<float>(cos(timer.GetTotalSeconds()) * radius);
+    float miniModelX = static_cast<float>(sin(m_totalTicks) * radius);
+    float miniModelZ = static_cast<float>(cos(m_totalTicks) * radius);
     model = glm::translate(model, glm::vec3(miniModelX, (modelAspect - 1.0f) / 2, miniModelZ));
     model = glm::scale(model, glm::vec3(modelAspect, modelAspect, modelAspect));
     glm::vec3 convertToVec3(model[3].x, model[3].y, model[3].z);

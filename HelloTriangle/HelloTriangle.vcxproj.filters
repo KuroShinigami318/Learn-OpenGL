@@ -30,12 +30,6 @@
     <ClInclude Include="common\StepTimer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="common\Log.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="common\WorkerThread.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="common\pch.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -43,18 +37,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="lib\bel_lodepng\include\lodepng.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="common\Utils.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="common\result.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="common\MessageQueue.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="common\Signal.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ApplicationContext.h">
@@ -93,13 +75,5 @@
     <Image Include="HelloTriangle.ico">
       <Filter>Resource Files</Filter>
     </Image>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="common\WorkerThread.inl">
-      <Filter>Header Files</Filter>
-    </None>
-    <None Include="common\MessageQueue.inl">
-      <Filter>Header Files</Filter>
-    </None>
   </ItemGroup>
 </Project>

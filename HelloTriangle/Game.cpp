@@ -1,11 +1,10 @@
+#include "framework.h"
 #include "Game.h"
 #include "ApplicationContext.h"
 
-Game::Game(IApplicationContext& i_ctx) : m_frame(0), m_preUpdateTime(0)
+Game::Game(IApplicationContext& i_ctx) : m_frame(0), m_preUpdateTime(0), renderThread(false, std::shared_ptr<Game>(this, utils::WorkerThread<>::null_deleter()), "Render Thread")
 {
 	m_connections.push_back(sig_onTick.Connect(&Game::Update, this));
-	std::shared_ptr<Game> sharedThis(this, utils::WorkerThread<>::null_deleter());
-	renderThread = std::make_shared<utils::WorkerThread<void()>>(false, sharedThis, "Render Thread");
 	m_connections.push_back(sig_resetTimer.Connect([this](float i_seconds)
 	{
 		if (i_seconds > 0)
@@ -19,13 +18,14 @@ Game::Game(IApplicationContext& i_ctx) : m_frame(0), m_preUpdateTime(0)
 	}));
 	m_connections.push_back(utils::Log::sig_errorThrow.Connect([](std::string what)
 	{
+#if defined(_DEBUG)
 		OutputDebugStringA(utils::Format("{}\n", what).c_str());
+#endif
 		assert(true);
 	}));
 	m_connections.push_back(i_ctx.sig_onFPSChanged.Connect(&Game::SetFixedFPS, this));
 	m_connections.push_back(i_ctx.sig_onSuspend.Connect(&Game::OnSuspending, this));
 	m_connections.push_back(i_ctx.sig_onResume.Connect(&Game::OnResuming, this));
-	SetFixedFPS(144);
 }
 
 Game::~Game()
@@ -42,11 +42,11 @@ void Game::Tick()
 {
 	m_timer.Tick([&]()
 	{
-		utils::Access<SignalKey>(sig_onTick).Emit(m_timer);
+		utils::Access<SignalKey>(sig_onTick).Emit(m_timer.GetElapsedSeconds());
 	});
 }
 
-void Game::Update(DX::StepTimer const&)
+void Game::Update(float)
 {
 	float elapsed = m_timer.GetTotalSeconds() - m_preUpdateTime;
 	if (elapsed > 1)

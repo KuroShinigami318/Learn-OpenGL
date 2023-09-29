@@ -2,7 +2,7 @@
 #include "Game.h"
 #include "ApplicationContext.h"
 
-Game::Game(IApplicationContext& i_ctx) : m_frame(0), m_preUpdateTime(0), renderThread(false, std::shared_ptr<Game>(this, utils::WorkerThread<>::null_deleter()), "Render Thread")
+Game::Game(IApplicationContext& i_ctx) : m_frame(0), m_preUpdateTime(0), renderThread(false, this, "Render Thread")
 {
 	m_connections.push_back(sig_onTick.Connect(&Game::Update, this));
 	m_connections.push_back(sig_resetTimer.Connect([this](float i_seconds)

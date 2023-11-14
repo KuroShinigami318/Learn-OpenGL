@@ -3,7 +3,7 @@
 #include "framework.h"
 #include "HelloTriangle.h"
 #include "Game.h"
-#include "common/StepTimer.h"
+#include "StepTimer.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -12,36 +12,27 @@
 #include "lib/bel_ImgLoader/include/stb_image.h"
 //#include "lib/bel_lodepng/include/lodepng.h"
 #include "ApplicationContext.h"
+#include "ISoundPlayer.h"
+#include "ISoundLoader.h"
+#include <Mmsystem.h>
+#include "WinSoundManager.h"
 
 #define MAX_LOADSTRING 100
 
-enum class VKEY
-{
-    _BEGIN,
+DeclareScopedEnumWithOperatorDefined(VKEY, DUMMY_NAMESPACE(), uint32_t,
     UP,
     DOWN,
     LEFT,
     RIGHT,
     ALT,
     SHIFT,
-    LIGHTING,
-    _END
-};
-
-VKEY& operator ++ (VKEY& e)
-{
-    if (e == VKEY::_END) {
-        throw std::out_of_range("Out of range VKEY");
-    }
-    e = VKEY(static_cast<std::underlying_type<VKEY>::type>(e) + 1);
-    return e;
-}
-
+    LIGHTING);
+DeclareConsecutiveType(Key, DUMMY_NAMESPACE(), int, -1)
 // Mapping VKey Controller
-std::unordered_multimap<VKEY, int> key_mapping;
+std::unordered_multimap<VKEY, Key> key_mapping;
 
-using unordered_multimap_citer = std::unordered_multimap<VKEY, int>::const_iterator;
-using unordered_multimap_iter = std::unordered_multimap<VKEY, int>::iterator;
+using unordered_multimap_citer = std::unordered_multimap<VKEY, Key>::const_iterator;
+using unordered_multimap_iter = std::unordered_multimap<VKEY, Key>::iterator;
 using key_pair = std::pair<unordered_multimap_citer, unordered_multimap_citer>;
 
 // Global Variables:
@@ -61,9 +52,8 @@ bool firstMouse = true;
 std::unordered_map<VKEY, bool> isKeyPressed;
 struct SignalKey;
 std::vector<utils::Connection> m_connections;
-utils::Signal<void(bool&), SignalKey> sig_onWaitingChanged;
+utils::Signal_mt<void(bool&), SignalKey> sig_onWaitingChanged;
 utils::Signal<void(), SignalKey> sig_onExport;
-utils::Signal<void(utils::WorkerThread<void()>&), SignalKey> sig_threadSyncFlush;
 
 #define BLACK_INDEX     0 
 #define RED_INDEX       13 
@@ -74,8 +64,6 @@ utils::Signal<void(utils::WorkerThread<void()>&), SignalKey> sig_threadSyncFlush
 const int divide = 2;
 const float divided = 1.0f / (float) divide;
 constexpr int max_scale = 200;
-constexpr int initial_up = max_scale / divide;
-int up = initial_up;
 float m_totalTicks = 0;
 unsigned int shaderProgram;
 unsigned int VBO, VAO, EBO, internalFormat;
@@ -175,11 +163,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
 
     // TODO: Place code here.
+    utils::TimerDelayer suspendDelayer(10000);
     ctx = std::make_unique<ApplicationContext>();
     applicationCtx = static_cast<ApplicationContext*>(ctx.get());
     assert(applicationCtx);
     g_game = std::make_unique<Game>(*ctx);
 
+    utils::unique_ref<ISoundLoader> soundLoader(new WinSoundManager());
     m_connections.push_back(g_game->sig_onTick.Connect(&drawScene));
     m_connections.push_back(sig_onWaitingChanged.Connect([](bool& o_isWaiting)
     {
@@ -190,9 +180,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         if (!m_isWaiting)
         {
             utils::Access<SignalKey>(sig_onWaitingChanged).Emit(m_isWaiting);
-            utils::WorkerThread t;
-            t.CreateWorkerThread([&]()
+            utils::WorkerThread().CreateWorkerThread([&]()
             {
+                utils::unique_ref<ISoundPlayer> soundPlayer = soundLoader->Load("Assets/emotion.mp3");
+                soundPlayer->PlayFromStart();
                 DEBUG_LOG("Debug", "Meter Performance");
                 double result = Calc_pi_MT(1E10);
                 DEBUG_LOG("Debug", "test: {}", result);
@@ -222,11 +213,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         {
             isKeyPressed[vkey] = false;
         }
-    }));
-    m_connections.push_back(sig_threadSyncFlush.Connect([](utils::WorkerThread<void()>& sync_thread)
-    {
-        sync_thread.Dispatch();
-        sync_thread.Wait();
     }));
 
     // Initialize global strings
@@ -260,7 +246,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             // main loop here
             if (!(isSignalSuspend || m_isPause))
             {
-                utils::Access<SignalKey>(sig_threadSyncFlush).Emit(*g_game->GetThread());
+                g_game->SyncRenderThread();
                 calcThread->Dispatch();
                 mainThreadQueue.Dispatch();
             }
@@ -274,8 +260,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     utils::Log::d("Main Thread", "Exiting Game");
     g_game.reset();
     utils::Log::d("Main Thread", "Exited Render thread");
-    calcThread.reset();
-    utils::Log::d("Main Thread", "Exited Calc thread pool");
+    calcThread->StopAsync();
     utils::Log::Wait();
 
     return (int) msg.wParam;
@@ -309,18 +294,18 @@ std::vector<int> GetVKeyMapping(VKEY i_vkey)
     unordered_multimap_citer const_iter = _key.first;
     for (; const_iter != _key.second; const_iter++)
     {
-        result.push_back(const_iter->second);
+        result.push_back(const_iter->second.value);
     }
     return result;
 }
 
 VKEY GetVKeyMapping(int i_key)
 {
-    auto vkeyIt = std::find_if(key_mapping.begin(), key_mapping.end(), [i_key](const std::pair<VKEY, int>& i_vkeyPair)
+    auto vkeyIt = std::find_if(key_mapping.begin(), key_mapping.end(), [i_key](const std::pair<VKEY, Key>& i_vkeyPair)
     {
-        return i_vkeyPair.second == i_key;
+        return i_vkeyPair.second == i_key && i_key != Key::k_invalid;
     });
-    return vkeyIt != key_mapping.end() ? vkeyIt->first : VKEY::_END;
+    return vkeyIt != key_mapping.end() ? vkeyIt->first : VKEY::_LAST;
 }
 
 void SetVKeyMapping(VKEY i_vkey, int i_mapKey)
@@ -386,8 +371,8 @@ GLvoid resize(GLsizei width, GLsizei height)
     m_ctxWidth = width;
     m_ctxHeight = height;
     glViewport(0, 0, width, height);
-    g_game->GetThread()->ChangeMode(utils::MODE::UPDATE_CALLBACK);
-    g_game->GetThread()->Pause(m_isPause);
+    g_game->ChangeModeRenderThread(utils::MODE::UPDATE_CALLBACK);
+    g_game->PauseRenderThread(m_isPause);
 }
 
 void createGLContext()
@@ -467,6 +452,13 @@ double Calc_pi_MT(int n)
         utils::MessageHandle<double> result = calcThread->PushCallback(&Calc_pi, n, i, CONCURRENCY);
         results.push_back(std::move(result));
     }
+    utils::Connection connection = calcThread->sig_onRunFinished.Connect([&results]()
+    {
+        for (utils::MessageHandle<double>& result : results)
+        {
+            result.Cancel();
+        }
+    });
     for (utils::MessageHandle<double>& futureResult : results)
     {
         Result<double, utils::MessageHandleERR> messageHandleResult = futureResult.GetResult();
@@ -487,27 +479,19 @@ double Move(VKEY move)
     float deltaTime = 0;
     float cameraSpeed = 0;
     float timeSleep = 0;
-    auto currentTP = std::chrono::system_clock::now();
-    auto preUpdateTP = currentTP;
-    std::chrono::duration<double> elapsed_seconds = currentTP - preUpdateTP;
+    utils::clock_timepoint<utils::steady_clock, utils::duration<double>> currentTP = utils::steady_clock::now();
     while (!m_isExiting && isKeyPressed[move])
     {
-        deltaTime = g_game->GetTimer().GetElapsedSeconds();
-        currentTP = std::chrono::system_clock::now();
-        elapsed_seconds = currentTP - preUpdateTP;
-        if (elapsed_seconds.count() < deltaTime)
-        {
-            int sleepTime = static_cast<int> (elapsed_seconds.count() * 1E6);
-            std::this_thread::sleep_for(std::chrono::microseconds(sleepTime));
-        }
-        preUpdateTP = currentTP;
-        cameraSpeed = k_speed * elapsed_seconds.count();
+        deltaTime = g_game->GetElapsedSeconds();
+        currentTP += utils::duration<double>(deltaTime);
+        std::this_thread::sleep_until(currentTP);
+        cameraSpeed = k_speed * deltaTime;
         switch (move)
         {
         case VKEY::UP:
             if (isKeyPressed[VKEY::SHIFT] && !(isKeyPressed[VKEY::LEFT] || isKeyPressed[VKEY::RIGHT]))
             {
-                cameraSpeed = 2.5 * k_speed * elapsed_seconds.count();
+                cameraSpeed = 2.5 * k_speed * deltaTime;
             }
             if (isKeyPressed[VKEY::DOWN])
             {
@@ -601,6 +585,8 @@ void LockCursor(bool i_isLock, HWND hWnd)
     }
     else
     {
+        firstMouse = true;
+        SetMiddleCursorPos(hWnd);
         ClipCursor(NULL);
         ShowCursor(true);
         ReleaseCapture();
@@ -681,12 +667,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         InitKeyController();
         ghDC = GetDC(hWnd);
-        g_game->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE, 2);
-        g_game->GetThread()->PushCallback(&createGLContext);
+        g_game->ChangeModeRenderThread(utils::MODE::MESSAGE_QUEUE, 2);
+        g_game->PushMessage(&createGLContext);
 
         GetClientRect(hWnd, &rect);
             
-        g_game->GetThread()->PushCallback(&initializeShaderProgram,(GLsizei) rect.right,(GLsizei) rect.bottom);
+        g_game->PushMessage(Game::MessageType(&initializeShaderProgram, (GLsizei)rect.right, (GLsizei)rect.bottom));
         m_isInitDone = false;
     }
     break;
@@ -783,17 +769,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)
         {
             GetClientRect(hWnd, &rect);
-            utils::WorkerThreadERR changeModeResult = g_game->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE, 1);
+            g_game->ChangeModeRenderThread(utils::MODE::MESSAGE_QUEUE, 1);
             if (!g_game->GetThread()->IsEmptyQueue())
             {
                 if (!m_isInitDone)
                 {
-                    utils::Access<SignalKey>(sig_threadSyncFlush).Emit(*g_game->GetThread());
+                    g_game->SyncRenderThread();
                     m_isInitDone = true;
                 }
-                g_game->GetThread()->Clear();
+                g_game->CleanQueueInRenderThread();
             }
-            g_game->GetThread()->PushCallback(&resize,(GLsizei) rect.right, (GLsizei) rect.bottom);
+            g_game->PushMessage(Game::MessageType(& resize, (GLsizei)rect.right, (GLsizei)rect.bottom));
         }
     }
     break;
@@ -807,7 +793,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (!m_isPause)
             {
                 applicationCtx->Resume();
-                for (VKEY iterKey = VKEY::_BEGIN; iterKey != VKEY::_END; ++iterKey)
+                for (VKEY iterKey = VKEY::_FIRST; iterKey != VKEY::_LAST; ++iterKey)
                 {
                     isKeyPressed[iterKey] = false;
                 }
@@ -832,10 +818,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         ExitGame(hWnd);
     }
-    else
-    {
-        LockCursor(true, hWnd);
-    }
     return 0;
     break;
     default:
@@ -853,7 +835,7 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
     std::string fpsStr{};
     unsigned int result = 0;
     bool isValid = false;
-    float fps = g_game->GetTimer().GetFramesPerSecond();
+    float fps = g_game->GetFramesPerSecond();
     switch (message)
     {
     case WM_INITDIALOG:
@@ -935,19 +917,18 @@ void ExitGame(HWND hWnd)
     m_isExiting = true;
     // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------
-    g_game->GetThread()->ChangeMode(utils::MODE::MESSAGE_QUEUE);
-    g_game->GetThread()->PushCallback(&CleanResource);
+    g_game->ChangeModeRenderThread(utils::MODE::MESSAGE_QUEUE);
+    g_game->PushMessage(&CleanResource);
 
     if (ghRC)
     {
-        g_game->GetThread()->PushCallback(&wglDeleteContext, (HGLRC) ghRC);
+        g_game->PushMessage(Game::MessageType(&wglDeleteContext, ghRC));
     }
     if (ghDC)
     {
-        g_game->GetThread()->PushCallback(&ReleaseDC, (HWND) hWnd, (HDC) ghDC);
+        g_game->PushMessage(Game::MessageType(&ReleaseDC, hWnd, ghDC));
     }
-    g_game->GetThread()->Dispatch();
-    g_game->GetThread()->Wait();
+    g_game->SyncRenderThread();
     DestroyWindow(hWnd);
 }
 
@@ -959,7 +940,6 @@ GLvoid drawScene(float deltaTime)
 
     // bind Texture
     //glBindTexture(GL_TEXTURE_2D, texture);
-
     glUseProgram(shaderProgram);
 
     // camera/view transformation

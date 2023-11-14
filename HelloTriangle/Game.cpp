@@ -1,8 +1,8 @@
-#include "framework.h"
+#include "common-utils.h"
 #include "Game.h"
 #include "ApplicationContext.h"
 
-Game::Game(IApplicationContext& i_ctx) : m_frame(0), m_preUpdateTime(0), renderThread(false, this, "Render Thread")
+Game::Game(IApplicationContext& i_ctx) : m_frame(0), m_preUpdateTime(0), renderThread(false, this, "Render Thread", std::make_unique<utils::HeartBeats<utils::BPS>>(300, utils::BPS())), m_lastFrame(0), sig_onRenderTheadFirstUpdate(renderThread->sig_onFirstUpdate)
 {
 	m_connections.push_back(sig_onTick.Connect(&Game::Update, this));
 	m_connections.push_back(sig_resetTimer.Connect([this](float i_seconds)
@@ -30,35 +30,37 @@ Game::Game(IApplicationContext& i_ctx) : m_frame(0), m_preUpdateTime(0), renderT
 
 Game::~Game()
 {
-	renderThread.reset();
+	renderThread->StopAsync();
 }
 
-const DX::StepTimer& Game::GetTimer()
+uint32_t Game::GetFramesPerSecond() const
 {
-	return m_timer;
+	return renderThread->GetFramesPerSecond();
+}
+
+double Game::GetElapsedSeconds() const
+{
+	return renderThread->GetElapsedSeconds();
 }
 
 void Game::Tick()
 {
-	m_timer.Tick([&]()
-	{
-		utils::Access<SignalKey>(sig_onTick).Emit(m_timer.GetElapsedSeconds());
-	});
+	utils::Access<SignalKey>(sig_onTick).Emit(renderThread->GetElapsedSeconds());
 }
 
 void Game::Update(float)
 {
-	float elapsed = m_timer.GetTotalSeconds() - m_preUpdateTime;
+	float elapsed = renderThread->GetTotalSeconds() - m_preUpdateTime;
 	if (elapsed > 1)
 	{
-		utils::Log::i("Game::Update", utils::Format("Get FPS: {}", m_timer.GetFramesPerSecond()));
-		utils::Access<SignalKey>(sig_resetTimer).Emit(m_timer.GetTotalSeconds());
+		utils::Log::i("Game::Update", utils::Format("Get FPS: {}", renderThread->GetFramesPerSecond()));
+		utils::Access<SignalKey>(sig_resetTimer).Emit(renderThread->GetTotalSeconds());
 		m_lastFrame = m_frame;
 	}
 	else if (elapsed < 0)
 	{
 		utils::Log::e("Game::Update", utils::Format("Reset time due to undefined behavior: {}", elapsed));
-		utils::Access<SignalKey>(sig_resetTimer).Emit(m_timer.GetTotalSeconds());
+		utils::Access<SignalKey>(sig_resetTimer).Emit(renderThread->GetTotalSeconds());
 	}
 	m_frame++;
 }
@@ -75,9 +77,39 @@ void Game::OnResuming()
 	renderThread->Pause(false);
 }
 
-utils::WorkerThread<void()>* Game::GetThread()
+const utils::WorkerThread<void()>* Game::GetThread() const
 {
 	return renderThread.get();
+}
+
+void Game::PauseRenderThread(bool i_pause)
+{
+	renderThread->Pause(i_pause);
+}
+
+void Game::ChangeModeRenderThread(utils::MODE i_mode, size_t i_maxQueue)
+{
+	if (!utils::Contains(i_mode, { utils::MODE::MESSAGE_QUEUE, utils::MODE::UPDATE_CALLBACK }))
+	{
+		return;
+	}
+	renderThread->ChangeMode(i_mode, i_maxQueue);
+}
+
+void Game::CleanQueueInRenderThread()
+{
+	renderThread->Clear();
+}
+
+void Game::SyncRenderThread()
+{
+	renderThread->Dispatch();
+	renderThread->Wait();
+}
+
+utils::MessageHandle<void> Game::PushMessage(MessageType i_message)
+{
+	return renderThread->PushCallback(i_message);
 }
 
 bool Game::IsAny(int value, std::vector<int> list)
@@ -87,6 +119,7 @@ bool Game::IsAny(int value, std::vector<int> list)
 
 void Game::SetFixedFPS(short i_fps)
 {
-	m_timer.SetFixedTimeStep(true);
-	m_timer.SetTargetElapsedTicks(m_timer.TicksPerSecond / i_fps);
+	if (i_fps == 0)
+		return;
+	renderThread->SetHeart(i_fps);
 }

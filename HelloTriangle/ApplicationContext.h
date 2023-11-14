@@ -1,12 +1,6 @@
 #pragma once
 
-namespace utils
-{
-template <typename Signature, typename AccessKey>
-class Signal;
-}
-
-struct IApplicationContext
+struct IApplicationContext : protected utils::noncopy, protected utils::nonmove
 {
 protected:
 	struct SignalKey;

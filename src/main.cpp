@@ -1,7 +1,13 @@
 // HelloTriangle.cpp : Defines the entry point for the application.
 //
+#include "stdafx.h"
+#include "ApplicationContext.h"
+#include "FrameThread.h"
 #include "framework.h"
-#include "HelloTriangle.h"
+#include "Log.h"
+#include "TimerDelayer.h"
+#include "system_clock.h"
+#include "LearnOpenGL.h"
 #include "Game.h"
 #include "StepTimer.h"
 #include <glad/glad.h>
@@ -9,9 +15,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 //#include <glad/glad_wgl.h>
-#include "lib/bel_ImgLoader/include/stb_image.h"
-//#include "lib/bel_lodepng/include/lodepng.h"
-#include "ApplicationContext.h"
+#include "stb_image.h"
+//#include "lodepng.h"
 #include "ISoundPlayer.h"
 #include "ISoundLoader.h"
 #include <Mmsystem.h>
@@ -27,7 +32,7 @@ DeclareScopedEnumWithOperatorDefined(VKEY, DUMMY_NAMESPACE(), uint32_t,
     ALT,
     SHIFT,
     LIGHTING);
-DeclareConsecutiveType(Key, DUMMY_NAMESPACE(), int, -1)
+DeclareConsecutiveType(Key, int, -1)
 // Mapping VKey Controller
 std::unordered_multimap<VKEY, Key> key_mapping;
 
@@ -45,15 +50,15 @@ GLsizei m_ctxWidth, m_ctxHeight;
 std::unique_ptr<IApplicationContext> ctx;
 ApplicationContext* applicationCtx;
 std::unique_ptr<Game> g_game;
+std::mutex mutex;
+std::condition_variable cv;
 utils::unique_ref<utils::WorkerThread<double()>> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, 50, true, 4);
-utils::MessageQueue mainThreadQueue;
-bool m_isExiting, m_isPause, isSignalSuspend, m_isWaiting, m_isInitDone;
+std::unique_ptr<utils::IHeartBeats> heart(new utils::HeartBeats(300, utils::BPS()));
+bool m_isExiting, m_isPause, isSignalSuspend, m_isWaiting, m_isInitDone = false;
 bool firstMouse = true;
 std::unordered_map<VKEY, bool> isKeyPressed;
-struct SignalKey;
 std::vector<utils::Connection> m_connections;
-utils::Signal_mt<void(bool&), SignalKey> sig_onWaitingChanged;
-utils::Signal<void(), SignalKey> sig_onExport;
+utils::Signal_public<void()> sig_onExport;
 
 #define BLACK_INDEX     0 
 #define RED_INDEX       13 
@@ -146,13 +151,63 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
-double              Calc_pi_MT(int n);
+double              Calc_pi_MT(double n);
 VKEY                GetVKeyMapping(int i_key);
-double              Move(VKEY move);
+void                SetMiddleCursorPos(HWND hWnd);
+void                Move(VKEY move, float deltaTime);
 int                 loadOpenGLFunctions();
 void                ExitGame(HWND hWnd);
 GLvoid              initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight);
-GLvoid              drawScene(float deltaTime);
+void                FramePrologue(float deltaTime);
+void                FrameEpilogue();
+GLvoid              drawScene();
+
+struct CalculateVirtualCursorPoint
+{
+    POINT Get(HWND hWnd)
+    {
+        POINT pCursor;
+        if (GetCursorPos(&pCursor))
+        {
+            ScreenToClient(hWnd, &pCursor);
+        }
+
+        virtualPosition.x += pCursor.x - previousPosition.x;
+        virtualPosition.y += pCursor.y - previousPosition.y;
+        if (pCursor.x <= 0 || pCursor.y <= 0 || pCursor.x >= m_ctxWidth || pCursor.y >= m_ctxHeight)
+        {
+            SetMiddleCursorPos(hWnd);
+            if (GetCursorPos(&pCursor))
+            {
+                ScreenToClient(hWnd, &pCursor);
+            }
+        }
+        previousPosition = pCursor;
+        return virtualPosition;
+    }
+
+    void Reset(POINT updatePosition)
+    {
+        if (firstReset)
+        {
+            previousPosition = updatePosition;
+            virtualPosition = updatePosition;
+            firstReset = false;
+        }
+    }
+
+    POINT previousPosition{ 0, 0 };
+    POINT virtualPosition{ 0, 0 };
+    bool firstReset = true;
+};
+
+std::array<VKEY, 4> s_movementKeys = { VKEY::DOWN, VKEY::LEFT, VKEY::RIGHT, VKEY::UP };
+utils::MessageSink_mt mainThreadQueue;
+std::unique_ptr<utils::SystemClock> s_clock;
+utils::FrameThread<void(float)> frameThread{ {FramePrologue}, {FrameEpilogue} };
+utils::MessageSink_mt& nextFrameQueue = frameThread.GetNextFrameMessageQueue();
+utils::MessageSink& thisFrameQueue = frameThread.GetFrameMessageQueue();
+utils::unique_ref<CalculateVirtualCursorPoint> virtualCursorPoint{new CalculateVirtualCursorPoint()};
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     _In_opt_ HINSTANCE hPrevInstance,
@@ -163,55 +218,71 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(lpCmdLine);
 
     // TODO: Place code here.
-    utils::TimerDelayer suspendDelayer(10000);
     ctx = std::make_unique<ApplicationContext>();
     applicationCtx = static_cast<ApplicationContext*>(ctx.get());
     assert(applicationCtx);
-    g_game = std::make_unique<Game>(*ctx);
+    m_connections.push_back(ctx->sig_onFPSChanged.Connect([](short fps)
+    {
+        heart.reset(new utils::HeartBeats(fps, utils::BPS()));
+    }));
 
     utils::unique_ref<ISoundLoader> soundLoader(new WinSoundManager());
-    m_connections.push_back(g_game->sig_onTick.Connect(&drawScene));
-    m_connections.push_back(sig_onWaitingChanged.Connect([](bool& o_isWaiting)
+    g_game = std::make_unique<Game>(*ctx);
+    utils::async(thisFrameQueue, []()
     {
-        o_isWaiting = !o_isWaiting;
-    }));
+        s_clock = std::make_unique<utils::SystemClock>();
+        m_connections.push_back(s_clock->sig_onTick.Connect([](float delta)
+        {
+            for (VKEY vkey : s_movementKeys)
+            {
+                if (!isKeyPressed[vkey])
+                {
+                    continue;
+                }
+                utils::async(thisFrameQueue, Move, vkey, delta);
+            }
+        }));
+    });
     m_connections.push_back(sig_onExport.Connect([&]()
     {
         if (!m_isWaiting)
         {
-            utils::Access<SignalKey>(sig_onWaitingChanged).Emit(m_isWaiting);
-            utils::WorkerThread().CreateWorkerThread([&]()
+            m_isWaiting = true;
+            std::thread([&]()
             {
-                utils::unique_ref<ISoundPlayer> soundPlayer = soundLoader->Load("Assets/emotion.mp3");
+                utils::unique_ref<ISoundPlayer> soundPlayer = soundLoader->Load("assets/emotion.mp3");
                 soundPlayer->PlayFromStart();
                 DEBUG_LOG("Debug", "Meter Performance");
-                double result = Calc_pi_MT(1E10);
+                double result = Calc_pi_MT(1E9);
+                if (m_isExiting) return 0;
                 DEBUG_LOG("Debug", "test: {}", result);
                 MessageBoxA(0, utils::Format("Pi: {}", result).c_str(), "Result", MB_SERVICE_NOTIFICATION);
-                utils::Access<SignalKey>(sig_onWaitingChanged).Emit(m_isWaiting);
+                m_isWaiting = false;
                 return 0;
-            }).expect("")->Detach();
+            }).detach();
         }
     }));
     m_connections.push_back(ctx->sig_onKeyDown.Connect([](int key)
     {
         VKEY vkey = GetVKeyMapping(key);
-        if (utils::Contains(vkey, { VKEY::DOWN, VKEY::LEFT, VKEY::RIGHT, VKEY::UP }))
+        if (vkey == VKEY::_COUNT)
         {
-            if (!isKeyPressed[vkey])
-            {
-                cameraFront = cameraDirect - cameraPos;
-                calcThread->PushCallback(Move, vkey);
-                isKeyPressed[vkey] = true;
-            }
+            return;
         }
+        isKeyPressed[vkey] = true;
+        cameraFront = cameraDirect - cameraPos;
     }));
     m_connections.push_back(ctx->sig_onKeyUp.Connect([](int key)
     {
         VKEY vkey = GetVKeyMapping(key);
-        if (utils::Contains(vkey, { VKEY::DOWN, VKEY::LEFT, VKEY::RIGHT, VKEY::UP }))
+        if (vkey != VKEY::_COUNT)
         {
             isKeyPressed[vkey] = false;
+        }
+        if (vkey == VKEY::LIGHTING)
+        {
+            bool isLightOn = lightColor == glm::vec3(1.0f);
+            lightColor = isLightOn ? glm::vec3(0.0f) : glm::vec3(1.0f);
         }
     }));
 
@@ -231,6 +302,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     MSG msg = {};
 
     // Main message loop:
+    utils::steady_clock::time_point beginFrameTimePoint = utils::steady_clock::now();
+    utils::steady_clock::time_point lastFrameTimePoint = utils::steady_clock::now();
+    utils::nanosecs actualElapsed;
     while (WM_QUIT != msg.message)
     {
         if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
@@ -246,9 +320,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             // main loop here
             if (!(isSignalSuspend || m_isPause))
             {
-                g_game->SyncRenderThread();
+                actualElapsed = utils::steady_clock::now() - beginFrameTimePoint;
+                beginFrameTimePoint = utils::steady_clock::now();
+                float delta = std::chrono::duration_cast<utils::duration<float>>(actualElapsed).count();
+                frameThread.Submit(delta);
+                g_game->Tick(delta);
                 calcThread->Dispatch();
-                mainThreadQueue.Dispatch();
+                frameThread.Wait();
+                actualElapsed = utils::steady_clock::now() - beginFrameTimePoint;
+                auto remaining = heart->cast_to_duration_as_nanoseconds() - actualElapsed;
+                lastFrameTimePoint += remaining.count() > 0 ? actualElapsed + remaining : actualElapsed;
+                std::unique_lock lk(mutex);
+                cv.wait_until(lk, lastFrameTimePoint, []() {return m_isExiting; });
+                mainThreadQueue.dispatch();
             }
             else
             {
@@ -257,9 +341,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         }
     }
 
-    utils::Log::d("Main Thread", "Exiting Game");
     g_game.reset();
-    utils::Log::d("Main Thread", "Exited Render thread");
+    utils::Log::d("Main Thread", "Exiting Game");
     calcThread->StopAsync();
     utils::Log::Wait();
 
@@ -284,6 +367,7 @@ void InitKeyController()
     key_mapping.emplace(VKEY::RIGHT, 0x44);
     key_mapping.emplace(VKEY::RIGHT, VK_RIGHT);
     key_mapping.emplace(VKEY::LIGHTING, 0x46);
+    key_mapping.emplace(VKEY::SHIFT, VK_SHIFT);
     key_mapping.emplace(VKEY::ALT, VK_MENU);
 }
 
@@ -305,7 +389,7 @@ VKEY GetVKeyMapping(int i_key)
     {
         return i_vkeyPair.second == i_key && i_key != Key::k_invalid;
     });
-    return vkeyIt != key_mapping.end() ? vkeyIt->first : VKEY::_LAST;
+    return vkeyIt != key_mapping.end() ? vkeyIt->first : VKEY::_COUNT;
 }
 
 void SetVKeyMapping(VKEY i_vkey, int i_mapKey)
@@ -368,11 +452,13 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
 GLvoid resize(GLsizei width, GLsizei height)
 {
+    if (!m_isInitDone)
+    {
+        return;
+    }
     m_ctxWidth = width;
     m_ctxHeight = height;
     glViewport(0, 0, width, height);
-    g_game->ChangeModeRenderThread(utils::MODE::UPDATE_CALLBACK);
-    g_game->PauseRenderThread(m_isPause);
 }
 
 void createGLContext()
@@ -430,43 +516,50 @@ int loadOpenGLFunctions()
     return 1;
 }
 
-double Calc_pi(int n, int start, int skip)
+double Calc_pi(double n, double start, double skip)
 {
     double result = 0.0;
-    for (int i = start; i < n; i+= skip)
+    for (double i = start; i < n; i+= skip)
     {
-        int sign = std::pow(-1, i);
+        double sign = std::pow(-1, i);
         double term = 1.0 / (i * 2 + 1);
         result += sign * term;
     }
     return result * 4;
 }
 
-double Calc_pi_MT(int n)
+double Calc_pi_MT(double n)
 {
+    using MessageHandle = utils::MessageHandle<double, utils::WorkerThreadERR>;
     double result = 0.0;
     unsigned int CONCURRENCY = std::thread::hardware_concurrency();
-    std::vector<utils::MessageHandle<double>> results;
+    std::vector<MessageHandle> results;
     for (unsigned int i = 0; i < CONCURRENCY; i++)
     {
-        utils::MessageHandle<double> result = calcThread->PushCallback(&Calc_pi, n, i, CONCURRENCY);
+        MessageHandle result = calcThread->PushCallback(&Calc_pi, n, i, CONCURRENCY);
         results.push_back(std::move(result));
     }
-    utils::Connection connection = calcThread->sig_onRunFinished.Connect([&results]()
+    utils::Connection connection = g_game->sig_onExit.Connect([&results]()
     {
-        for (utils::MessageHandle<double>& result : results)
+        for (MessageHandle& result : results)
         {
-            result.Cancel();
+            auto cancelResult = result.Cancel();
+            if (cancelResult != utils::MessageHandleERR::SUCCESS)
+            {
+                ERROR_LOG("Cancel Result", "cancel failed: {}", cancelResult);
+                continue;
+            }
+            INFO_LOG("Cancel", "Cancel Successfully");
         }
     });
-    for (utils::MessageHandle<double>& futureResult : results)
+    for (MessageHandle& futureResult : results)
     {
         Result<double, utils::MessageHandleERR> messageHandleResult = futureResult.GetResult();
         if (messageHandleResult.isOk())
         {
             result += messageHandleResult.unwrap();
         }
-        else
+        else if (!m_isExiting)
         {
             ERROR_LOG("Debug", "error: {}", messageHandleResult.unwrapErr());
         }
@@ -474,59 +567,33 @@ double Calc_pi_MT(int n)
     return result;
 }
 
-double Move(VKEY move)
+void Move(VKEY move, float deltaTime)
 {
-    float deltaTime = 0;
     float cameraSpeed = 0;
-    float timeSleep = 0;
-    utils::clock_timepoint<utils::steady_clock, utils::duration<double>> currentTP = utils::steady_clock::now();
-    while (!m_isExiting && isKeyPressed[move])
+    cameraSpeed = k_speed * deltaTime;
+    switch (move)
     {
-        deltaTime = g_game->GetElapsedSeconds();
-        currentTP += utils::duration<double>(deltaTime);
-        std::this_thread::sleep_until(currentTP);
-        cameraSpeed = k_speed * deltaTime;
-        switch (move)
+    case VKEY::UP:
+        if (isKeyPressed[VKEY::SHIFT] && !(isKeyPressed[VKEY::LEFT] || isKeyPressed[VKEY::RIGHT]))
         {
-        case VKEY::UP:
-            if (isKeyPressed[VKEY::SHIFT] && !(isKeyPressed[VKEY::LEFT] || isKeyPressed[VKEY::RIGHT]))
-            {
-                cameraSpeed = 2.5 * k_speed * deltaTime;
-            }
-            if (isKeyPressed[VKEY::DOWN])
-            {
-                cameraSpeed = 0;
-            }
-            cameraPos += cameraSpeed * cameraFront;
-            cameraDirect = cameraPos + cameraFront;
-        break;
-        case VKEY::LEFT:
-            if (isKeyPressed[VKEY::RIGHT])
-            {
-                cameraSpeed = 0;
-            }
-            cameraPos -= Right * cameraSpeed;
-            cameraDirect = cameraPos + cameraFront;
-        break;
-        case VKEY::DOWN:
-            if (isKeyPressed[VKEY::UP])
-            {
-                cameraSpeed = 0;
-            }
-            cameraPos -= cameraSpeed * cameraFront;
-            cameraDirect = cameraPos + cameraFront;
-        break;
-        case VKEY::RIGHT:
-            if (isKeyPressed[VKEY::LEFT])
-            {
-                cameraSpeed = 0;
-            }
-            cameraPos += Right * cameraSpeed;
-            cameraDirect = cameraPos + cameraFront;
-        break;
+            cameraSpeed = 2.5f * k_speed * deltaTime;
         }
+        cameraPos += cameraSpeed * cameraFront;
+        cameraDirect = cameraPos + cameraFront;
+    break;
+    case VKEY::LEFT:
+        cameraPos -= Right * cameraSpeed;
+        cameraDirect = cameraPos + cameraFront;
+    break;
+    case VKEY::DOWN:
+        cameraPos -= cameraSpeed * cameraFront;
+        cameraDirect = cameraPos + cameraFront;
+    break;
+    case VKEY::RIGHT:
+        cameraPos += Right * cameraSpeed;
+        cameraDirect = cameraPos + cameraFront;
+    break;
     }
-    return 0;
 }
 
 void SetMiddleCursorPos(HWND hWnd)
@@ -550,7 +617,8 @@ void SetMiddleCursorPos(HWND hWnd)
     // to the ClipCursor function.
     SetRect(&rect, ptClientUL.x, ptClientUL.y,
         ptClientLR.x, ptClientLR.y);
-    SetCursorPos(rect.left + (m_ctxWidth / 2), rect.top + (m_ctxHeight / 2));
+    POINT cursorPosition(rect.left + (m_ctxWidth / 2), rect.top + (m_ctxHeight / 2));
+    SetCursorPos(cursorPosition.x, cursorPosition.y);
 }
 
 void LockCursor(bool i_isLock, HWND hWnd)
@@ -582,6 +650,12 @@ void LockCursor(bool i_isLock, HWND hWnd)
         SetRect(&rect, ptClientUL.x, ptClientUL.y,
             ptClientLR.x, ptClientLR.y);
         ClipCursor(&rect);
+        POINT pCursor;
+        if (GetCursorPos(&pCursor))
+        {
+            ScreenToClient(hWnd, &pCursor);
+        }
+        virtualCursorPoint->Reset(pCursor);
     }
     else
     {
@@ -593,16 +667,8 @@ void LockCursor(bool i_isLock, HWND hWnd)
     }
 }
 
-void MouseCallback(HWND hWnd, double i_xpos, double i_ypos)
+void MouseCallback(float xpos, float ypos)
 {
-    /*if (cameraDirect == glm::vec3(0.0f, 0.0f, 0.0f))
-    {
-        return;
-    }*/
-    float xpos = static_cast<float>(i_xpos);
-    float ypos = static_cast<float>(i_ypos);
-    POINT pCursor;
-
     if (firstMouse)
     {
         lastX = xpos;
@@ -667,13 +733,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         InitKeyController();
         ghDC = GetDC(hWnd);
-        g_game->ChangeModeRenderThread(utils::MODE::MESSAGE_QUEUE, 2);
-        g_game->PushMessage(&createGLContext);
+        utils::async(nextFrameQueue, &createGLContext);
 
         GetClientRect(hWnd, &rect);
             
-        g_game->PushMessage(Game::MessageType(&initializeShaderProgram, (GLsizei)rect.right, (GLsizei)rect.bottom));
-        m_isInitDone = false;
+        utils::async(nextFrameQueue, &initializeShaderProgram, (GLsizei)rect.right, (GLsizei)rect.bottom);
     }
     break;
     case WM_COMMAND:
@@ -688,17 +752,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case IDM_EXIT:
         //if (MessageBoxA(0, "Do you want to exit game?", "Warning", MB_YESNO) == IDYES)
         {
-            ExitGame(hWnd);
+            utils::async(nextFrameQueue, &ExitGame, hWnd);
         }
         break;
         case IDM_EXPORT:
         {
-            utils::Access<SignalKey>(sig_onExport).Emit();
+            sig_onExport.Emit();
         }
         break;
         case IDM_PAUSE:
         {
-            m_isPause = !g_game->GetThread()->IsPaused();
+            m_isPause = !m_isPause;
+            isSignalSuspend = m_isPause;
             m_isPause ? applicationCtx->Suspend() : applicationCtx->Resume();
         }
         default:
@@ -707,40 +772,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     }
     break;
     case WM_MOUSEMOVE:
-        POINTS posCursor = MAKEPOINTS(lParam);
-        if (posCursor.x <= 0 || posCursor.y <= 0 || posCursor.x >= m_ctxWidth || posCursor.y >= m_ctxHeight)
-        {
-            SetMiddleCursorPos(hWnd);
-            firstMouse = true;
-            return DefWindowProc(hWnd, message, wParam, lParam);
-        }
         if (!m_isPause)
         {
-            mainThreadQueue.PushCallback(&MouseCallback, hWnd, posCursor.x, posCursor.y);
+            POINT pCursor = virtualCursorPoint->Get(hWnd);
+            utils::async(nextFrameQueue, &MouseCallback, pCursor.x, pCursor.y);
         }
     break;
     case WM_MOUSEWHEEL:
         zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
-        mainThreadQueue.PushCallback(&ScrollCallback, hWnd, zDelta);
+        utils::async(nextFrameQueue, &ScrollCallback, hWnd, zDelta);
     break;
     case WM_KEYDOWN:
-        applicationCtx->InvokeKeyDown(wParam);
-        if (wParam == VK_SHIFT && !isKeyPressed[VKEY::SHIFT])
-        {
-            isKeyPressed[VKEY::SHIFT] = true;
-        }
+        applicationCtx->InvokeKeyDown((int)wParam);
     break;
     case WM_KEYUP:
-        applicationCtx->InvokeKeyUp(wParam);
-        if (wParam == VK_SHIFT)
-        {
-            isKeyPressed[VKEY::SHIFT] = false;
-        }
-        if (g_game->IsAny(wParam, GetVKeyMapping(VKEY::LIGHTING)))
-        {
-            bool isLightOn = lightColor == glm::vec3(1.0f);
-            lightColor = isLightOn ? glm::vec3(0.0f) : glm::vec3(1.0f);
-        }
+        applicationCtx->InvokeKeyUp((int)wParam);
     break;
     case WM_SYSKEYDOWN:
         if (wParam == VK_MENU && !isKeyPressed[VKEY::ALT])
@@ -769,17 +815,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)
         {
             GetClientRect(hWnd, &rect);
-            g_game->ChangeModeRenderThread(utils::MODE::MESSAGE_QUEUE, 1);
-            if (!g_game->GetThread()->IsEmptyQueue())
-            {
-                if (!m_isInitDone)
-                {
-                    g_game->SyncRenderThread();
-                    m_isInitDone = true;
-                }
-                g_game->CleanQueueInRenderThread();
-            }
-            g_game->PushMessage(Game::MessageType(& resize, (GLsizei)rect.right, (GLsizei)rect.bottom));
+            utils::async(nextFrameQueue, &resize, (GLsizei)rect.right, (GLsizei)rect.bottom);
         }
     }
     break;
@@ -793,7 +829,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if (!m_isPause)
             {
                 applicationCtx->Resume();
-                for (VKEY iterKey = VKEY::_FIRST; iterKey != VKEY::_LAST; ++iterKey)
+                for (VKEY iterKey = VKEY::_FIRST; iterKey != VKEY::_COUNT; ++iterKey)
                 {
                     isKeyPressed[iterKey] = false;
                 }
@@ -816,7 +852,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_CLOSE:
     if (MessageBoxA(0, "Do you want to exit game?", "Warning", MB_YESNO) == IDYES)
     {
-        ExitGame(hWnd);
+        utils::async(nextFrameQueue, &ExitGame, hWnd);
     }
     return 0;
     break;
@@ -835,7 +871,7 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
     std::string fpsStr{};
     unsigned int result = 0;
     bool isValid = false;
-    float fps = g_game->GetFramesPerSecond();
+    float fps = (float)heart->beats;
     switch (message)
     {
     case WM_INITDIALOG:
@@ -915,29 +951,25 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 void ExitGame(HWND hWnd)
 {
     m_isExiting = true;
+    cv.notify_one();
+    s_clock.reset();
     // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------
-    g_game->ChangeModeRenderThread(utils::MODE::MESSAGE_QUEUE);
-    g_game->PushMessage(&CleanResource);
+    CleanResource();
 
     if (ghRC)
     {
-        g_game->PushMessage(Game::MessageType(&wglDeleteContext, ghRC));
+        wglDeleteContext(ghRC);
     }
     if (ghDC)
     {
-        g_game->PushMessage(Game::MessageType(&ReleaseDC, hWnd, ghDC));
+        ReleaseDC(hWnd, ghDC);
     }
-    g_game->SyncRenderThread();
-    DestroyWindow(hWnd);
+    utils::async(mainThreadQueue, &DestroyWindow, hWnd);
 }
 
-GLvoid drawScene(float deltaTime)
+GLvoid drawScene()
 {
-    m_totalTicks += deltaTime;
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
     // bind Texture
     //glBindTexture(GL_TEXTURE_2D, texture);
     glUseProgram(shaderProgram);
@@ -982,7 +1014,7 @@ GLvoid drawScene(float deltaTime)
     //glBindVertexArray(0); // no need to unbind it every time
 
     //front mini model
-    float modelAspect = 0.4;
+    float modelAspect = 0.4f;
     float radius = 2.0f;
     float miniModelX = static_cast<float>(sin(m_totalTicks) * radius);
     float miniModelZ = static_cast<float>(cos(m_totalTicks) * radius);
@@ -1000,6 +1032,25 @@ GLvoid drawScene(float deltaTime)
 
     //glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
     SwapBuffers(ghDC);
+}
+
+void FramePrologue(float deltaTime)
+{
+    if (s_clock)
+    {
+        s_clock->Update(deltaTime);
+    }
+    m_totalTicks += deltaTime;
+}
+
+void FrameEpilogue()
+{
+    if (m_isInitDone)
+    {
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        drawScene();
+    }
 }
 
 GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
@@ -1146,7 +1197,7 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 
     //int width, height, nrChannels, desiredChannel;
     //stbi_set_flip_vertically_on_load(true);
-    //unsigned char* data = stbi_load("Assets/OK!.png", &width, &height, &nrChannels, 0);
+    //unsigned char* data = stbi_load("assets/OK!.png", &width, &height, &nrChannels, 0);
     //desiredChannel = nrChannels; // format color channels
     //switch (desiredChannel)
     //{
@@ -1195,4 +1246,5 @@ GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 
     // uncomment this call to draw in wireframe polygons.
     //glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    m_isInitDone = true;
 }

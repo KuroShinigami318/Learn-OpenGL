@@ -1,4 +1,5 @@
 #pragma once
+#include "Signal.h"
 
 struct IApplicationContext : protected utils::noncopy, protected utils::nonmove
 {

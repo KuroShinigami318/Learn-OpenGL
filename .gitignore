@@ -1,6 +1,7 @@
-*.zip
+/libs
+/build
 /Debug
-/x64
-.vs
-/HelloTriangle/x64
-/HelloTriangle/Debug
+/Release
+/MinSizeRel
+/RelWithDebInfo
+/src/*.aps

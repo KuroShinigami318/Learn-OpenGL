@@ -1,0 +1,53 @@
+﻿cmake_minimum_required (VERSION 3.8)
+
+# Enable Hot Reload for MSVC compilers if supported.
+if (POLICY CMP0141)
+  cmake_policy(SET CMP0141 NEW)
+  set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<IF:$<AND:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>,$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>,$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>>")
+endif()
+
+project ("LearnOpenGL")
+option(GLM_STATIC_LIBRARY_ENABLE "GLM static library" ON)
+set(CMAKE_CXX_STANDARD 20)
+
+set(ASSETS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets)
+set(LIBS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/libs_dep.json LIBS_DEP_JSON)
+string(JSON total_libs LENGTH "${LIBS_DEP_JSON}" libs)
+MATH(EXPR total_libs "${total_libs}-1")
+foreach(IDX RANGE ${total_libs})
+    # Get the name from the current JSON element.
+    string(JSON CUR_NAME GET ${LIBS_DEP_JSON} libs ${IDX} name)
+    add_subdirectory(${LIBS_DIR}/${CUR_NAME})
+    # Get the URL from the current JSON element.
+    string(JSON TARGET_LINK_PRJ GET ${LIBS_DEP_JSON} libs ${IDX} prj_name)
+    list(APPEND TARGETS_LINK_PRJ ${TARGET_LINK_PRJ})
+endforeach()
+
+# Add source to this project's executable.
+set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
+file(GLOB SOURCES ${SRC_DIR}/*.cpp)
+file(GLOB RESOURCES ${SRC_DIR}/*.ico ${SRC_DIR}/*.rc)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_executable(${PROJECT_NAME} WIN32 ${SOURCES} ${RESOURCES})
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
+set_target_properties(${PROJECT_NAME} PROPERTIES
+                      RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_CURRENT_SOURCE_DIR}/Debug
+                      RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_SOURCE_DIR}/Release
+                      RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_CURRENT_SOURCE_DIR}/MinSizeRel
+                      RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_CURRENT_SOURCE_DIR}/RelWithDebInfo
+)
+
+if(EXISTS ${ASSETS_DIR})
+add_custom_target(copy_assets
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/assets ${CMAKE_CURRENT_BINARY_DIR}/assets
+)
+add_dependencies(${PROJECT_NAME} copy_assets)
+# file(COPY assets DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/${CMAKE_BUILD_TYPE})
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                   COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/assets ${CMAKE_CURRENT_SOURCE_DIR}/$<CONFIG>/assets
+)
+endif()
+foreach(TARGET_LINK_LIB ${TARGETS_LINK_PRJ})
+target_link_libraries(${PROJECT_NAME} ${TARGET_LINK_LIB})
+endforeach()

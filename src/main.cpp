@@ -160,6 +160,8 @@ void                ExitGame(HWND hWnd);
 GLvoid              initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight);
 void                FramePrologue(float deltaTime);
 void                FrameEpilogue();
+void                MovementUpdate(float delta);
+void                SwitchFlag(bool& o_flag, bool value);
 GLvoid              drawScene();
 
 struct CalculateVirtualCursorPoint
@@ -227,21 +229,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }));
 
     utils::unique_ref<ISoundLoader> soundLoader(new WinSoundManager());
-    g_game = std::make_unique<Game>(*ctx);
-    utils::async(thisFrameQueue, []()
+    g_game = std::make_unique<Game>(*ctx, nextFrameQueue);
+    utils::async(nextFrameQueue, []()
     {
         s_clock = std::make_unique<utils::SystemClock>();
-        m_connections.push_back(s_clock->sig_onTick.Connect([](float delta)
-        {
-            for (VKEY vkey : s_movementKeys)
-            {
-                if (!isKeyPressed[vkey])
-                {
-                    continue;
-                }
-                utils::async(thisFrameQueue, Move, vkey, delta);
-            }
-        }));
+        m_connections.push_back(s_clock->sig_onTick.Connect(&MovementUpdate));
     });
     m_connections.push_back(sig_onExport.Connect([&]()
     {
@@ -257,7 +249,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                 if (m_isExiting) return 0;
                 DEBUG_LOG("Debug", "test: {}", result);
                 MessageBoxA(0, utils::Format("Pi: {}", result).c_str(), "Result", MB_SERVICE_NOTIFICATION);
-                m_isWaiting = false;
+                utils::async(mainThreadQueue, SwitchFlag, m_isWaiting, false);
                 return 0;
             }).detach();
         }
@@ -318,26 +310,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         else
         {
             // main loop here
-            if (!(isSignalSuspend || m_isPause))
+            actualElapsed = utils::steady_clock::now() - beginFrameTimePoint;
+            beginFrameTimePoint = utils::steady_clock::now();
+            float delta = std::chrono::duration_cast<utils::duration<float>>(actualElapsed).count();
+            if (!isSignalSuspend)
             {
-                actualElapsed = utils::steady_clock::now() - beginFrameTimePoint;
-                beginFrameTimePoint = utils::steady_clock::now();
-                float delta = std::chrono::duration_cast<utils::duration<float>>(actualElapsed).count();
                 frameThread.Submit(delta);
                 g_game->Tick(delta);
                 calcThread->Dispatch();
                 frameThread.Wait();
-                actualElapsed = utils::steady_clock::now() - beginFrameTimePoint;
-                auto remaining = heart->cast_to_duration_as_nanoseconds() - actualElapsed;
-                lastFrameTimePoint += remaining.count() > 0 ? actualElapsed + remaining : actualElapsed;
-                std::unique_lock lk(mutex);
-                cv.wait_until(lk, lastFrameTimePoint, []() {return m_isExiting; });
-                mainThreadQueue.dispatch();
             }
-            else
-            {
-                Sleep(utils::k_updateIntervalMilliseconds);
-            }
+            actualElapsed = utils::steady_clock::now() - beginFrameTimePoint;
+            auto remaining = heart->cast_to_duration_as_nanoseconds() - actualElapsed;
+            lastFrameTimePoint += remaining.count() > 0 ? actualElapsed + remaining : actualElapsed;
+            std::unique_lock lk(mutex);
+            cv.wait_until(lk, lastFrameTimePoint, []() {return m_isExiting; });
+            mainThreadQueue.dispatch();
         }
     }
 
@@ -752,6 +740,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case IDM_EXIT:
         //if (MessageBoxA(0, "Do you want to exit game?", "Warning", MB_YESNO) == IDYES)
         {
+            isSignalSuspend = false;
             utils::async(nextFrameQueue, &ExitGame, hWnd);
         }
         break;
@@ -763,8 +752,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case IDM_PAUSE:
         {
             m_isPause = !m_isPause;
-            isSignalSuspend = m_isPause;
-            m_isPause ? applicationCtx->Suspend() : applicationCtx->Resume();
+            utils::async(mainThreadQueue, &SwitchFlag, isSignalSuspend, m_isPause);
+            m_isPause ? applicationCtx->SuspendAsync() : applicationCtx->ResumeAsync();
         }
         default:
             return DefWindowProc(hWnd, message, wParam, lParam);
@@ -825,10 +814,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         {
             isKeyPressed[VKEY::ALT] = false;
             LockCursor(true, hWnd);
-            isSignalSuspend = false;
             if (!m_isPause)
             {
-                applicationCtx->Resume();
+                isSignalSuspend = false;
+                applicationCtx->ResumeAsync();
                 for (VKEY iterKey = VKEY::_FIRST; iterKey != VKEY::_COUNT; ++iterKey)
                 {
                     isKeyPressed[iterKey] = false;
@@ -837,8 +826,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         else
         {
-            isSignalSuspend = true;
-            applicationCtx->Suspend();
+            utils::async(mainThreadQueue, &SwitchFlag, isSignalSuspend, true);
+            applicationCtx->SuspendAsync();
             if (!isKeyPressed[VKEY::ALT])
             {
                 LockCursor(false, hWnd);
@@ -852,6 +841,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_CLOSE:
     if (MessageBoxA(0, "Do you want to exit game?", "Warning", MB_YESNO) == IDYES)
     {
+        isSignalSuspend = false;
         utils::async(nextFrameQueue, &ExitGame, hWnd);
     }
     return 0;
@@ -1038,7 +1028,7 @@ void FramePrologue(float deltaTime)
 {
     if (s_clock)
     {
-        s_clock->Update(deltaTime);
+        utils::async(thisFrameQueue, &utils::SystemClock::Update, s_clock.get(), deltaTime);
     }
     m_totalTicks += deltaTime;
 }
@@ -1051,6 +1041,23 @@ void FrameEpilogue()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         drawScene();
     }
+}
+
+void MovementUpdate(float delta)
+{
+    for (VKEY vkey : s_movementKeys)
+    {
+        if (!isKeyPressed[vkey])
+        {
+            continue;
+        }
+        Move(vkey, delta);
+    }
+}
+
+void SwitchFlag(bool& o_flag, bool value)
+{
+    o_flag = value;
 }
 
 GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)

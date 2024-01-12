@@ -4,7 +4,7 @@
 #include "Game.h"
 #include "StepTimer.h"
 
-Game::Game(IApplicationContext& i_ctx) : m_frame(0), m_preUpdateTime(0)
+Game::Game(IApplicationContext& i_ctx, utils::IMessageSinkBase& nextFrameQueue) : m_frame(0), m_preUpdateTime(0)
 	, m_timer(new DX::StepTimer())
 {
 	m_connections.push_back(sig_resetTimer.Connect([this](float i_seconds)
@@ -25,8 +25,8 @@ Game::Game(IApplicationContext& i_ctx) : m_frame(0), m_preUpdateTime(0)
 #endif
 		assert(true);
 	}));
-	m_connections.push_back(i_ctx.sig_onSuspend.Connect(&Game::OnSuspending, this));
-	m_connections.push_back(i_ctx.sig_onResume.Connect(&Game::OnResuming, this));
+	m_connections.push_back(i_ctx.sig_onSuspend.ConnectAsync(&nextFrameQueue, &Game::OnSuspending, this));
+	m_connections.push_back(i_ctx.sig_onResume.ConnectAsync(&nextFrameQueue, &Game::OnResuming, this));
 }
 
 Game::~Game()

@@ -8,11 +8,11 @@ struct IApplicationContext;
 
 class Game : protected utils::nonmove
 {
-public:
+protected:
 	struct SignalKey;
 
 public:
-	Game(IApplicationContext& i_ctx);
+	Game(IApplicationContext& i_ctx, utils::IMessageSinkBase& nextFrameQueue);
 	~Game();
 
 	utils::Signal_mt<void(), SignalKey> sig_onExit;

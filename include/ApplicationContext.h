@@ -13,8 +13,8 @@ public:
 	utils::Signal<void(), SignalKey> sig_onResume;
 
 private:
-	virtual void Suspend() = 0;
-	virtual void Resume() = 0;
+	virtual void SuspendAsync() = 0;
+	virtual void ResumeAsync() = 0;
 	virtual void InvokeKeyDown(int) = 0;
 	virtual void InvokeKeyUp(int) = 0;
 	virtual void ChangeFPSLimit(short) = 0;
@@ -23,13 +23,13 @@ private:
 struct ApplicationContext : public IApplicationContext
 {
 public:
-	void Suspend() override
+	void SuspendAsync() override
 	{
-		utils::Access<SignalKey>(sig_onSuspend).Emit();
+		utils::Access<SignalKey>(sig_onSuspend).EmitAsync();
 	}
-	void Resume() override
+	void ResumeAsync() override
 	{
-		utils::Access<SignalKey>(sig_onResume).Emit();
+		utils::Access<SignalKey>(sig_onResume).EmitAsync();
 	}
 	void InvokeKeyDown(int key) override
 	{

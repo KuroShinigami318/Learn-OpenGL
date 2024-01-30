@@ -13,10 +13,10 @@ def getRepo(repo_name, folder_name, tag, api_key):
     check = requests.get('https://api.github.com/user/repos', headers = headers)
     lib_dir = f'{os.curdir}/libs/{folder_name}'
     if check.ok:
-        if os.path.exists(lib_dir):
-            shutil.rmtree(lib_dir)
         r = requests.get(url, headers=headers)
         r.raise_for_status()
+        if os.path.exists(lib_dir):
+            shutil.rmtree(lib_dir)
         z = zipfile.ZipFile(io.BytesIO(r.content))
         temp, = zipfile.Path(z).iterdir()
         z.extractall(path=f'{os.curdir}/libs/')

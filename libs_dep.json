@@ -3,27 +3,27 @@
  {
     "name": "common",
     "prj_name": "CommonLib",
-    "tag": "5.0.2"
+    "tag": "v5.0.2"
  },
  {
     "name": "GLAD",
     "prj_name": "GLAD",
-    "tag": "0.0.0"
+    "tag": "v0.0.0"
  },
  {
     "name": "GLM",
     "prj_name": "glm_static",
-    "tag": "0.0.0"
+    "tag": "v0.0.0"
  },
  {
     "name": "bel_ImgLoader",
     "prj_name": "ImgLoader",
-    "tag": "0.0.0"
+    "tag": "v0.0.0"
  },
  {
     "name": "bel_lodepng",
     "prj_name": "lodepng",
-    "tag": "0.0.0"
+    "tag": "v0.0.0"
  }
 ]
 }

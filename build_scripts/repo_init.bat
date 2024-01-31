@@ -7,5 +7,5 @@ call Decrypt %encryptedapikey% apikey
 
 set scripts_dir=%~dp0
 pushd ..
-python %scripts_dir%\getDeps.py %apikey% %owner% libs_dep.json
+python %scripts_dir%\getDeps.py %apikey% %owner% libs_dep.json libs
 popd &endlocal

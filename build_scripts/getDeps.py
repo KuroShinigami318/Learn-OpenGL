@@ -14,9 +14,11 @@ class ReposManager:
         self.owner = owner
         self.error = None
 
-    def getRepo(self, repo_name, folder_name, tag):
+    def getRepo(self, repo_name, folder_name, tag, /, *, customURL = None):
         headers = {'Accept': 'application/vnd.github+json', 'Authorization': f'Bearer {self.api_key}', 'X-GitHub-Api-Version': '2022-11-28'}
         url = f'https://api.github.com/repos/{self.owner}/{repo_name}/zipball/{tag}'
+        if customURL is not None:
+            url = customURL
         check = requests.get('https://api.github.com/user/repos', headers = headers)
         lib_dir = f'{os.curdir}/libs/{folder_name}'
         if check.ok:

@@ -18,9 +18,11 @@ MATH(EXPR total_libs "${total_libs}-1")
 foreach(IDX RANGE ${total_libs})
     # Get the name from the current JSON element.
     string(JSON CUR_NAME GET ${LIBS_DEP_JSON} libs ${IDX} name)
-    add_subdirectory(${LIBS_DIR}/${CUR_NAME})
     # Get the URL from the current JSON element.
     string(JSON TARGET_LINK_PRJ GET ${LIBS_DEP_JSON} libs ${IDX} prj_name)
+    if (NOT TARGET ${TARGET_LINK_PRJ})
+       add_subdirectory(${LIBS_DIR}/${CUR_NAME} ${CMAKE_BINARY_DIR}/${CUR_NAME})
+    endif()
     list(APPEND TARGETS_LINK_PRJ ${TARGET_LINK_PRJ})
 endforeach()
 

@@ -20,7 +20,7 @@
 #include "ISoundPlayer.h"
 #include "ISoundLoader.h"
 #include <Mmsystem.h>
-#include "WinSoundManager.h"
+#include "SoundManager.h"
 
 #define MAX_LOADSTRING 100
 
@@ -228,7 +228,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         heart.reset(new utils::HeartBeats(fps, utils::BPS()));
     }));
 
-    utils::unique_ref<ISoundLoader> soundLoader(new WinSoundManager());
+    utils::unique_ref<ISoundLoader> soundLoader(new SoundManager());
     g_game = std::make_unique<Game>(*ctx, nextFrameQueue);
     utils::async(nextFrameQueue, []()
     {

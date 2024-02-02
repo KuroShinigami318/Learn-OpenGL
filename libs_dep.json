@@ -3,7 +3,7 @@
  {
     "name": "common",
     "prj_name": "CommonLib",
-    "tag": "v5.0.4"
+    "tag": "v5.0.5"
  },
  {
     "name": "GLAD",
@@ -29,6 +29,11 @@
     "name": "AudioBPlayer",
     "prj_name": "AudioBPlayer",
     "tag": "v0.0.1"
+ },
+ {
+    "name": "BLog",
+    "prj_name": "BLog",
+    "tag": "v0.0.0"
  }
 ]
 }

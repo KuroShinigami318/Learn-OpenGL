@@ -5,7 +5,7 @@
 #include "StepTimer.h"
 
 Game::Game(IApplicationContext& i_ctx, utils::IMessageSinkBase& nextFrameQueue) : m_frame(0), m_preUpdateTime(0)
-	, m_timer(new DX::StepTimer())
+	, m_timer(new DX::StepTimer()), m_soundManager(i_ctx.soundManager)
 {
 	m_connections.push_back(sig_resetTimer.Connect([this](float i_seconds)
 	{
@@ -25,8 +25,17 @@ Game::Game(IApplicationContext& i_ctx, utils::IMessageSinkBase& nextFrameQueue) 
 #endif
 		assert(true);
 	}));
+	m_connections.push_back(i_ctx.soundManager.cb_onError.Connect([](const ISoundLoader::Error& error)
+	{
+		ERROR_LOG("SOUND_ERROR", "{}\n", error.reason);
+	}));
+	m_connections.push_back(i_ctx.soundManager.sig_onSoundPlaying.Connect([](ISoundPlayer* playing)
+	{
+		INFO_LOG_WITH_FORMAT(utils::Log::TextFormat(utils::Log::TextStyle::Reset, {0, 255, 0}), "SOUND_INFO", "{}\n", playing->GetSoundName());
+	}));
 	m_connections.push_back(i_ctx.sig_onSuspend.ConnectAsync(&nextFrameQueue, &Game::OnSuspending, this));
 	m_connections.push_back(i_ctx.sig_onResume.ConnectAsync(&nextFrameQueue, &Game::OnResuming, this));
+	LoadPlaylist();
 }
 
 Game::~Game()
@@ -61,10 +70,31 @@ void Game::Update(float)
 
 void Game::OnSuspending() const
 {
-	utils::Log::d("Game::OnSuspending", "Suspended");
+	m_soundManager.Suspend();
+	utils::Log::d("Game::OnSuspending", "Suspended", utils::Log::TextFormat(utils::Log::TextStyle::Reset, { 0, 255, 0 }));
 }
 
 void Game::OnResuming() const
 {
-	utils::Log::d("Game::OnResuming", "Resumed");
+	utils::Log::d("Game::OnResuming", "Resumed", utils::Log::TextFormat(utils::Log::TextStyle::Reset, { 0, 255, 0 }));
+	m_soundManager.Resume();
+}
+
+void Game::LoadPlaylist()
+{
+	std::ifstream playlistStream;
+	std::string tempbuff;
+	playlistStream.open("assets/playlist", std::ios::in);
+	if (playlistStream)
+	{
+		std::deque<std::string> playlist;
+		while (!playlistStream.eof())
+		{
+			std::getline(playlistStream, tempbuff);
+			tempbuff = "assets/" + tempbuff;
+			playlist.push_back(tempbuff);
+		}
+		m_soundManager.PlayGroupSound(playlist);
+		playlistStream.close();
+	}
 }

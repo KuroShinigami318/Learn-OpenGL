@@ -4,6 +4,8 @@ namespace DX
 class StepTimer;
 }
 
+class SoundManager;
+
 struct IApplicationContext;
 
 class Game : protected utils::nonmove
@@ -23,7 +25,9 @@ private:
 	void OnSuspending() const;
 	void OnResuming() const;
 	void Update(float);
+	void LoadPlaylist();
 
+	SoundManager&								m_soundManager;
 	// Rendering loop timer.
 	utils::unique_ref<DX::StepTimer>			m_timer;
 	uint64_t                                    m_frame;

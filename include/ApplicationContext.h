@@ -1,5 +1,6 @@
 #pragma once
 #include "Signal.h"
+#include "SoundManager.h"
 
 struct IApplicationContext : protected utils::noncopy, protected utils::nonmove
 {
@@ -11,6 +12,8 @@ public:
 	utils::Signal<void(int), SignalKey> sig_onKeyUp;
 	utils::Signal<void(), SignalKey> sig_onSuspend;
 	utils::Signal<void(), SignalKey> sig_onResume;
+public:
+	SoundManager soundManager;
 
 private:
 	virtual void SuspendAsync() = 0;

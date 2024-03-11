@@ -1,4 +1,4 @@
-﻿cmake_minimum_required (VERSION 3.16)
+﻿cmake_minimum_required (VERSION 3.19)
 
 # Enable Hot Reload for MSVC compilers if supported.
 if (POLICY CMP0141)
@@ -31,7 +31,7 @@ set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 file(GLOB SOURCES ${SRC_DIR}/*.cpp)
 file(GLOB RESOURCES ${SRC_DIR}/*.ico ${SRC_DIR}/*.rc)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-add_executable(${PROJECT_NAME} WIN32 ${SOURCES} ${RESOURCES})
+add_executable(${PROJECT_NAME} ${SOURCES} ${RESOURCES})
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
 set_target_properties(${PROJECT_NAME} PROPERTIES
                       RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_CURRENT_SOURCE_DIR}/Debug

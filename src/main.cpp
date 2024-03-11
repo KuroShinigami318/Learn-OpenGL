@@ -52,7 +52,7 @@ ApplicationContext* applicationCtx;
 std::unique_ptr<Game> g_game;
 std::mutex mutex;
 std::condition_variable cv;
-utils::unique_ref<utils::WorkerThread<double()>> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, 50, true, 4);
+utils::unique_ref<utils::WorkerThread<double()>> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, utils::WorkerThread<double()>::ThreadConfig(50, true, 4));
 std::unique_ptr<utils::IHeartBeats> heart(new utils::HeartBeats(300, utils::BPS()));
 bool m_isExiting, m_isPause, isSignalSuspend, m_isWaiting, m_isInitDone = false;
 bool firstMouse = true;
@@ -211,15 +211,8 @@ utils::MessageSink_mt& nextFrameQueue = frameThread.GetNextFrameMessageQueue();
 utils::MessageSink& thisFrameQueue = frameThread.GetFrameMessageQueue();
 utils::unique_ref<CalculateVirtualCursorPoint> virtualCursorPoint{new CalculateVirtualCursorPoint()};
 
-int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
-    _In_opt_ HINSTANCE hPrevInstance,
-    _In_ LPWSTR    lpCmdLine,
-    _In_ int       nCmdShow)
+int main(int argv, char** argc)
 {
-    UNREFERENCED_PARAMETER(hPrevInstance);
-    UNREFERENCED_PARAMETER(lpCmdLine);
-
-    // TODO: Place code here.
     ctx = std::make_unique<ApplicationContext>();
     applicationCtx = static_cast<ApplicationContext*>(ctx.get());
     assert(applicationCtx);
@@ -228,12 +221,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         heart.reset(new utils::HeartBeats(fps, utils::BPS()));
     }));
 
-    utils::unique_ref<ISoundLoader> soundLoader(new SoundManager());
     g_game = std::make_unique<Game>(*ctx, nextFrameQueue);
     utils::async(nextFrameQueue, []()
     {
         s_clock = std::make_unique<utils::SystemClock>();
+        ctx->soundManager.SetThreadId(utils::GetCurrentThreadID());
+        ctx->soundManager.SetYieler(std::make_unique<utils::RecursiveYielder>(nextFrameQueue, frameThread, *s_clock));
         m_connections.push_back(s_clock->sig_onTick.Connect(&MovementUpdate));
+        m_connections.push_back(s_clock->sig_onTick.Connect(&SoundManager::Update, applicationCtx->soundManager));
     });
     m_connections.push_back(sig_onExport.Connect([&]()
     {
@@ -242,7 +237,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             m_isWaiting = true;
             std::thread([&]()
             {
-                utils::unique_ref<ISoundPlayer> soundPlayer = soundLoader->Load("assets/emotion.mp3");
+                utils::unique_ref<ISoundPlayer> soundPlayer = applicationCtx->soundManager.Load("assets/emotion.mp3").expect("Unexpected error");
                 soundPlayer->PlayFromStart();
                 DEBUG_LOG("Debug", "Meter Performance");
                 double result = Calc_pi_MT(1E9);
@@ -279,17 +274,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }));
 
     // Initialize global strings
-    LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
-    LoadStringW(hInstance, IDC_HELLOTRIANGLE, szWindowClass, MAX_LOADSTRING);
-    MyRegisterClass(hInstance);
+    LoadStringW(GetModuleHandle(NULL), IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
+    LoadStringW(GetModuleHandle(NULL), IDC_HELLOTRIANGLE, szWindowClass, MAX_LOADSTRING);
+    MyRegisterClass(GetModuleHandle(NULL));
 
     // Perform application initialization:
-    if (!InitInstance(hInstance, nCmdShow))
+    if (!InitInstance(GetModuleHandle(NULL), argv))
     {
         return FALSE;
     }
 
-    HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_HELLOTRIANGLE));
+    HACCEL hAccelTable = LoadAccelerators(GetModuleHandle(NULL), MAKEINTRESOURCE(IDC_HELLOTRIANGLE));
 
     MSG msg = {};
 
@@ -827,7 +822,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         else
         {
             utils::async(mainThreadQueue, &SwitchFlag, isSignalSuspend, true);
-            applicationCtx->SuspendAsync();
+            if (!isSignalSuspend)
+            {
+                applicationCtx->SuspendAsync();
+            }
             if (!isKeyPressed[VKEY::ALT])
             {
                 LockCursor(false, hWnd);
@@ -943,6 +941,8 @@ void ExitGame(HWND hWnd)
     m_isExiting = true;
     cv.notify_one();
     s_clock.reset();
+    applicationCtx->soundManager.ShutDown();
+    applicationCtx->soundManager.SetThreadId(utils::details::threading::thread_id_t::k_invalid);
     // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------
     CleanResource();

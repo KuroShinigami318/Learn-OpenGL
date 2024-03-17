@@ -4,7 +4,7 @@
 #include "Game.h"
 #include "StepTimer.h"
 
-Game::Game(IApplicationContext& i_ctx, utils::IMessageSinkBase& nextFrameQueue) : m_frame(0), m_preUpdateTime(0)
+Game::Game(IApplicationContext& i_ctx, utils::IMessageQueue& nextFrameQueue) : m_frame(0), m_preUpdateTime(0)
 	, m_timer(new DX::StepTimer()), m_soundManager(i_ctx.soundManager)
 {
 	m_connections.push_back(sig_resetTimer.Connect([this](float i_seconds)
@@ -23,7 +23,7 @@ Game::Game(IApplicationContext& i_ctx, utils::IMessageSinkBase& nextFrameQueue) 
 #if defined(_DEBUG)
 		OutputDebugStringA(utils::Format("{}\n", what).c_str());
 #endif
-		assert(true);
+		ASSERT(false);
 	}));
 	m_connections.push_back(i_ctx.soundManager.cb_onError.Connect([](const ISoundLoader::Error& error)
 	{

@@ -58,7 +58,7 @@ bool m_isExiting, m_isPause, isSignalSuspend, m_isWaiting, m_isInitDone = false;
 bool firstMouse = true;
 std::unordered_map<VKEY, bool> isKeyPressed;
 std::vector<utils::Connection> m_connections;
-utils::Signal_public<void()> sig_onExport;
+utils::Signal<void()> sig_onExport;
 
 #define BLACK_INDEX     0 
 #define RED_INDEX       13 
@@ -215,7 +215,7 @@ int main(int argv, char** argc)
 {
     ctx = std::make_unique<ApplicationContext>();
     applicationCtx = static_cast<ApplicationContext*>(ctx.get());
-    assert(applicationCtx);
+    ASSERT(applicationCtx);
     m_connections.push_back(ctx->sig_onFPSChanged.Connect([](short fps)
     {
         heart.reset(new utils::HeartBeats(fps, utils::BPS()));
@@ -238,7 +238,7 @@ int main(int argv, char** argc)
             std::thread([&]()
             {
                 utils::unique_ref<ISoundPlayer> soundPlayer = applicationCtx->soundManager.Load("assets/emotion.mp3").expect("Unexpected error");
-                soundPlayer->PlayFromStart();
+                soundPlayer->PlayFromStart().ignoreResult();
                 DEBUG_LOG("Debug", "Meter Performance");
                 double result = Calc_pi_MT(1E9);
                 if (m_isExiting) return 0;

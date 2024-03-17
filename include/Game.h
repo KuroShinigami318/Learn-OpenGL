@@ -14,7 +14,7 @@ protected:
 	struct SignalKey;
 
 public:
-	Game(IApplicationContext& i_ctx, utils::IMessageSinkBase& nextFrameQueue);
+	Game(IApplicationContext& i_ctx, utils::IMessageQueue& nextFrameQueue);
 	~Game();
 
 	utils::Signal_mt<void(), SignalKey> sig_onExit;

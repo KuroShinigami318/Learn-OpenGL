@@ -27,7 +27,7 @@ Game::Game(IApplicationContext& i_ctx, utils::IMessageQueue& nextFrameQueue) : m
 	}));
 	m_connections.push_back(i_ctx.soundManager.cb_onError.Connect([](const ISoundLoader::Error& error)
 	{
-		ERROR_LOG("SOUND_ERROR", "{}\n", error.reason);
+		ERROR_LOG("SOUND_ERROR", "{}\n", error);
 	}));
 	m_connections.push_back(i_ctx.soundManager.sig_onSoundPlaying.Connect([](ISoundPlayer* playing)
 	{

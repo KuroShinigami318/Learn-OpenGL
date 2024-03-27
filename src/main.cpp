@@ -19,12 +19,12 @@
 //#include "lodepng.h"
 #include "ISoundPlayer.h"
 #include "ISoundLoader.h"
-#include <Mmsystem.h>
 #include "SoundManager.h"
+#include "ThreadControl.h"
 
 #define MAX_LOADSTRING 100
 
-DeclareScopedEnumWithOperatorDefined(VKEY, DUMMY_NAMESPACE(), uint32_t,
+DeclareScopedEnumWithOperatorDefined(VKEY, DUMMY_NAMESPACE, uint32_t,
     UP,
     DOWN,
     LEFT,
@@ -226,7 +226,7 @@ int main(int argv, char** argc)
     {
         s_clock = std::make_unique<utils::SystemClock>();
         ctx->soundManager.SetThreadId(utils::GetCurrentThreadID());
-        ctx->soundManager.SetYieler(std::make_unique<utils::RecursiveYielder>(nextFrameQueue, frameThread, *s_clock));
+        ctx->soundManager.SetYieler(std::make_unique<utils::CancellableRecursiveYielder>(nextFrameQueue, frameThread, *s_clock));
         m_connections.push_back(s_clock->sig_onTick.Connect(&MovementUpdate));
         m_connections.push_back(s_clock->sig_onTick.Connect(&SoundManager::Update, applicationCtx->soundManager));
     });
@@ -941,7 +941,7 @@ void ExitGame(HWND hWnd)
     m_isExiting = true;
     cv.notify_one();
     s_clock.reset();
-    applicationCtx->soundManager.ShutDown();
+    applicationCtx->soundManager.Shutdown();
     applicationCtx->soundManager.SetThreadId(utils::details::threading::thread_id_t::k_invalid);
     // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------

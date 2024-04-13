@@ -1,7 +1,8 @@
 #include "stdafx.h"
 #include "ApplicationContext.h"
-#include "Log.h"
 #include "Game.h"
+#include "make_playlist.h"
+#include "Log.h"
 #include "StepTimer.h"
 
 Game::Game(IApplicationContext& i_ctx, utils::IMessageQueue& nextFrameQueue) : m_frame(0), m_preUpdateTime(0)
@@ -77,10 +78,12 @@ void Game::OnResuming() const
 	m_soundManager.Resume();
 }
 
-Game::LoadResult Game::LoadPlaylist(const std::string& folder)
+Game::LoadResult Game::LoadPlaylist(const std::string& folder) const
 {
 	std::ifstream playlistStream;
 	std::string tempbuff;
+	make_playlist_result makeResult = make_playlist(folder.c_str());
+	if (makeResult.isErr()) return make_inner_error<LoadError>(LoadErrorCode::ReadPlaylistFailed, makeResult.unwrapErr());
 	playlistStream.open(folder + "/playlist", std::ios::in);
 	if (playlistStream)
 	{

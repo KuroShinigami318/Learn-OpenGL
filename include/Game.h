@@ -1,5 +1,6 @@
 #pragma once
 #include "result.h"
+#include "make_playlist_result.h"
 
 namespace DX
 {
@@ -18,9 +19,10 @@ protected:
 public:
 	enum class LoadErrorCode
 	{
+		ReadPlaylistFailed,
 		InvalidFolder
 	};
-	using LoadError = utils::Error<LoadErrorCode>;
+	using LoadError = utils::Error<LoadErrorCode, make_playlist_error>;
 	using LoadResult = Result<void, LoadError>;
 
 public:
@@ -29,7 +31,7 @@ public:
 
 	utils::Signal_mt<void(), SignalKey> sig_onExit;
 	void Tick(float delta);
-	LoadResult LoadPlaylist(const std::string& folder);
+	LoadResult LoadPlaylist(const std::string& folder) const;
 
 private:
 	// Messages

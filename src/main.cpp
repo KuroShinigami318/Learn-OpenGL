@@ -213,7 +213,6 @@ utils::unique_ref<CalculateVirtualCursorPoint> virtualCursorPoint{new CalculateV
 
 int main(int argv, char** argc)
 {
-    std::vector<utils::Connection> m_connections;
     ctx = std::make_unique<ApplicationContext>();
     applicationCtx = static_cast<ApplicationContext*>(ctx.get());
     ASSERT(applicationCtx);
@@ -231,15 +230,15 @@ int main(int argv, char** argc)
 
     g_game = std::make_unique<Game>(*ctx, nextFrameQueue);
     Game::LoadResult loadResult = g_game->LoadPlaylist(folder);
-    ASSERT(loadResult.isOk(), utils::Format("Load Playlist failed: {}", loadResult.unwrapErrOr(Game::LoadErrorCode::InvalidFolder)).c_str());
+    ASSERT_PLAIN_MSG(loadResult.isOk(), "Load Playlist failed: {}", loadResult.unwrapErrOr(Game::LoadErrorCode::InvalidFolder));
 
-    utils::async(nextFrameQueue, [&m_connections]()
+    utils::async(nextFrameQueue, []()
     {
         s_clock = std::make_unique<utils::SystemClock>();
         ctx->soundManager.SetThreadId(utils::GetCurrentThreadID());
         ctx->soundManager.SetYieler(std::make_unique<utils::CancellableRecursiveYielder>(nextFrameQueue, frameThread, *s_clock));
-        m_connections.push_back(s_clock->sig_onTick.Connect(&MovementUpdate));
-        m_connections.push_back(s_clock->sig_onTick.Connect(&SoundManager::Update, applicationCtx->soundManager));
+        s_clock->sig_onTick.Connect(&MovementUpdate).Detach();
+        s_clock->sig_onTick.Connect(&SoundManager::Update, applicationCtx->soundManager).Detach();
     });
 
     utils::WorkerThread_waitable<double> exportWaitable;

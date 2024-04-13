@@ -4,12 +4,12 @@
 #include "ApplicationContext.h"
 #include "FrameThread.h"
 #include "framework.h"
-#include "Log.h"
-#include "TimerDelayer.h"
-#include "system_clock.h"
-#include "LearnOpenGL.h"
 #include "Game.h"
+#include "LearnOpenGL.h"
+#include "Log.h"
 #include "StepTimer.h"
+#include "system_clock.h"
+#include "TimerDelayer.h"
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -17,6 +17,7 @@
 //#include <glad/glad_wgl.h>
 #include "stb_image.h"
 //#include "lodepng.h"
+#include "InputParser.h"
 #include "ISoundPlayer.h"
 #include "ISoundLoader.h"
 #include "SoundManager.h"
@@ -54,10 +55,9 @@ std::mutex mutex;
 std::condition_variable cv;
 utils::unique_ref<utils::WorkerThread<double()>> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, utils::WorkerThread<double()>::ThreadConfig(50, true, 4));
 std::unique_ptr<utils::IHeartBeats> heart(new utils::HeartBeats(300, utils::BPS()));
-bool m_isExiting, m_isPause, isSignalSuspend, m_isWaiting, m_isInitDone = false;
+bool m_isExiting, m_isPause, isSignalSuspend, m_isInitDone = false;
 bool firstMouse = true;
 std::unordered_map<VKEY, bool> isKeyPressed;
-std::vector<utils::Connection> m_connections;
 utils::Signal<void()> sig_onExport;
 
 #define BLACK_INDEX     0 
@@ -151,7 +151,7 @@ ATOM                MyRegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
-double              Calc_pi_MT(double n);
+void                Calc_pi_MT(double n, std::function<void(const double&)> callback);
 VKEY                GetVKeyMapping(int i_key);
 void                SetMiddleCursorPos(HWND hWnd);
 void                Move(VKEY move, float deltaTime);
@@ -213,16 +213,27 @@ utils::unique_ref<CalculateVirtualCursorPoint> virtualCursorPoint{new CalculateV
 
 int main(int argv, char** argc)
 {
+    std::vector<utils::Connection> m_connections;
     ctx = std::make_unique<ApplicationContext>();
     applicationCtx = static_cast<ApplicationContext*>(ctx.get());
     ASSERT(applicationCtx);
-    m_connections.push_back(ctx->sig_onFPSChanged.Connect([](short fps)
+    ctx->sig_onFPSChanged.Connect([](short fps)
     {
         heart.reset(new utils::HeartBeats(fps, utils::BPS()));
-    }));
+    }).Detach();
+
+    InputParser parser(argv, argc);
+    std::string folder("assets");
+    if (InputParser::position_t positionParser = parser.HaveInputOptions(InputOptions({ "-folder" })))
+    {
+        folder = parser.ExtractValue(positionParser);
+    }
 
     g_game = std::make_unique<Game>(*ctx, nextFrameQueue);
-    utils::async(nextFrameQueue, []()
+    Game::LoadResult loadResult = g_game->LoadPlaylist(folder);
+    ASSERT(loadResult.isOk(), utils::Format("Load Playlist failed: {}", loadResult.unwrapErrOr(Game::LoadErrorCode::InvalidFolder)).c_str());
+
+    utils::async(nextFrameQueue, [&m_connections]()
     {
         s_clock = std::make_unique<utils::SystemClock>();
         ctx->soundManager.SetThreadId(utils::GetCurrentThreadID());
@@ -230,26 +241,28 @@ int main(int argv, char** argc)
         m_connections.push_back(s_clock->sig_onTick.Connect(&MovementUpdate));
         m_connections.push_back(s_clock->sig_onTick.Connect(&SoundManager::Update, applicationCtx->soundManager));
     });
-    m_connections.push_back(sig_onExport.Connect([&]()
+
+    utils::WorkerThread_waitable<double> exportWaitable;
+    sig_onExport.Connect([&]()
     {
-        if (!m_isWaiting)
+        if (exportWaitable.IsInitialized() && !exportWaitable.HasFinished()) return;
+        utils::unique_ref<ISoundPlayer> soundPlayer = applicationCtx->soundManager.Load("assets/emotion.mp3").expect("Unexpected error");
+        soundPlayer->PlayFromStart().ignoreResult();
+        DEBUG_LOG("Debug", "Meter Performance");
+        std::function<void(const double&)> callback = [](const double& result)
         {
-            m_isWaiting = true;
-            std::thread([&]()
-            {
-                utils::unique_ref<ISoundPlayer> soundPlayer = applicationCtx->soundManager.Load("assets/emotion.mp3").expect("Unexpected error");
-                soundPlayer->PlayFromStart().ignoreResult();
-                DEBUG_LOG("Debug", "Meter Performance");
-                double result = Calc_pi_MT(1E9);
-                if (m_isExiting) return 0;
-                DEBUG_LOG("Debug", "test: {}", result);
-                MessageBoxA(0, utils::Format("Pi: {}", result).c_str(), "Result", MB_SERVICE_NOTIFICATION);
-                utils::async(mainThreadQueue, SwitchFlag, m_isWaiting, false);
-                return 0;
-            }).detach();
-        }
-    }));
-    m_connections.push_back(ctx->sig_onKeyDown.Connect([](int key)
+            DEBUG_LOG("Debug", "test: {}", result);
+            MessageBoxA(0, utils::Format("Pi: {}", result).c_str(), "Result", MB_SERVICE_NOTIFICATION);
+        };
+        Calc_pi_MT(1E9, callback);
+        std::function<void(utils::unique_ref<ISoundPlayer>)> closedSound = [](utils::unique_ref<ISoundPlayer>) {};
+        exportWaitable = calcThread->PushCallback([closedSound](utils::unique_ref<ISoundPlayer> soundPlayer)
+        {
+            utils::async(mainThreadQueue, closedSound, std::move(soundPlayer));
+            return 0.;
+        }, std::move(soundPlayer));
+    }).Detach();
+    ctx->sig_onKeyDown.Connect([](int key)
     {
         VKEY vkey = GetVKeyMapping(key);
         if (vkey == VKEY::_COUNT)
@@ -258,8 +271,8 @@ int main(int argv, char** argc)
         }
         isKeyPressed[vkey] = true;
         cameraFront = cameraDirect - cameraPos;
-    }));
-    m_connections.push_back(ctx->sig_onKeyUp.Connect([](int key)
+    }).Detach();
+    ctx->sig_onKeyUp.Connect([](int key)
     {
         VKEY vkey = GetVKeyMapping(key);
         if (vkey != VKEY::_COUNT)
@@ -271,7 +284,7 @@ int main(int argv, char** argc)
             bool isLightOn = lightColor == glm::vec3(1.0f);
             lightColor = isLightOn ? glm::vec3(0.0f) : glm::vec3(1.0f);
         }
-    }));
+    }).Detach();
 
     // Initialize global strings
     LoadStringW(GetModuleHandle(NULL), IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
@@ -511,20 +524,46 @@ double Calc_pi(double n, double start, double skip)
     return result * 4;
 }
 
-double Calc_pi_MT(double n)
+using MessageHandle = utils::WorkerThread_waitable<double>;
+
+void FinalCalculation(double previousResult, std::shared_ptr<std::vector<MessageHandle>> results, std::function<void(const double&)> callback)
 {
-    using MessageHandle = utils::MessageHandle<double, utils::WorkerThreadERR>;
-    double result = 0.0;
+    double result = previousResult;
+    for (auto futureIt = results->cbegin(); futureIt != results->cend();)
+    {
+        const MessageHandle& futureResult = *futureIt;
+        if (!futureResult.HasFinished())
+        {
+            utils::async(*calcThread, utils::CallableBound<void()>(FinalCalculation, result, results, callback));
+            return;
+        }
+        Result<double, utils::MessageHandleERR> messageHandleResult = futureResult.GetResult();
+        if (messageHandleResult.isOk())
+        {
+            result += messageHandleResult.unwrap();
+        }
+        else
+        {
+            ERROR_LOG("Debug", "error: {}", messageHandleResult.unwrapErr());
+        }
+        futureIt = results->erase(futureIt);
+    }
+    callback(result);
+}
+
+utils::Connection s_exitConnection;
+
+void Calc_pi_MT(double n, std::function<void(const double&)> callback)
+{
     unsigned int CONCURRENCY = std::thread::hardware_concurrency();
-    std::vector<MessageHandle> results;
+    std::shared_ptr<std::vector<MessageHandle>> results = std::make_shared<std::vector<MessageHandle>>();
     for (unsigned int i = 0; i < CONCURRENCY; i++)
     {
-        MessageHandle result = calcThread->PushCallback(&Calc_pi, n, i, CONCURRENCY);
-        results.push_back(std::move(result));
+        results->push_back(calcThread->PushCallback(&Calc_pi, n, i, CONCURRENCY));
     }
-    utils::Connection connection = g_game->sig_onExit.Connect([&results]()
+    s_exitConnection = g_game->sig_onExit.Connect([results]()
     {
-        for (MessageHandle& result : results)
+        for (MessageHandle& result : *results)
         {
             auto cancelResult = result.Cancel();
             if (cancelResult != utils::MessageHandleERR::SUCCESS)
@@ -535,19 +574,7 @@ double Calc_pi_MT(double n)
             INFO_LOG("Cancel", "Cancel Successfully");
         }
     });
-    for (MessageHandle& futureResult : results)
-    {
-        Result<double, utils::MessageHandleERR> messageHandleResult = futureResult.GetResult();
-        if (messageHandleResult.isOk())
-        {
-            result += messageHandleResult.unwrap();
-        }
-        else if (!m_isExiting)
-        {
-            ERROR_LOG("Debug", "error: {}", messageHandleResult.unwrapErr());
-        }
-    }
-    return result;
+    utils::async(*calcThread, utils::CallableBound<void()>(FinalCalculation, 0, results, callback));
 }
 
 void Move(VKEY move, float deltaTime)
@@ -759,7 +786,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (!m_isPause)
         {
             POINT pCursor = virtualCursorPoint->Get(hWnd);
-            utils::async(nextFrameQueue, &MouseCallback, pCursor.x, pCursor.y);
+            utils::async(nextFrameQueue, &MouseCallback, (float) pCursor.x, (float) pCursor.y);
         }
     break;
     case WM_MOUSEWHEEL:
@@ -940,6 +967,7 @@ void ExitGame(HWND hWnd)
 {
     m_isExiting = true;
     cv.notify_one();
+    ASSERT(!s_clock->IsUpdating());
     s_clock.reset();
     applicationCtx->soundManager.Shutdown();
     applicationCtx->soundManager.SetThreadId(utils::details::threading::thread_id_t::k_invalid);

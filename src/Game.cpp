@@ -20,9 +20,7 @@ Game::Game(IApplicationContext& i_ctx, utils::IMessageQueue& nextFrameQueue) : m
 	}));
 	m_connections.push_back(utils::Log::sig_errorThrow.Connect([](std::string what)
 	{
-#if defined(_DEBUG)
-		OutputDebugStringA(utils::Format("{}\n", what).c_str());
-#endif
+		std::cerr << what << std::endl;
 		ASSERT(false);
 	}));
 	m_connections.push_back(i_ctx.soundManager.cb_onError.Connect([](const ISoundLoader::Error& error)
@@ -35,7 +33,6 @@ Game::Game(IApplicationContext& i_ctx, utils::IMessageQueue& nextFrameQueue) : m
 	}));
 	m_connections.push_back(i_ctx.sig_onSuspend.ConnectAsync(&nextFrameQueue, &Game::OnSuspending, this));
 	m_connections.push_back(i_ctx.sig_onResume.ConnectAsync(&nextFrameQueue, &Game::OnResuming, this));
-	LoadPlaylist();
 }
 
 Game::~Game()
@@ -80,21 +77,28 @@ void Game::OnResuming() const
 	m_soundManager.Resume();
 }
 
-void Game::LoadPlaylist()
+Game::LoadResult Game::LoadPlaylist(const std::string& folder)
 {
 	std::ifstream playlistStream;
 	std::string tempbuff;
-	playlistStream.open("assets/playlist", std::ios::in);
+	playlistStream.open(folder + "/playlist", std::ios::in);
 	if (playlistStream)
 	{
 		std::deque<std::string> playlist;
 		while (!playlistStream.eof())
 		{
 			std::getline(playlistStream, tempbuff);
-			tempbuff = "assets/" + tempbuff;
+			tempbuff = folder +"/" + tempbuff;
 			playlist.push_back(tempbuff);
 		}
-		m_soundManager.PlayGroupSound(playlist);
+		m_soundManager.PlayGroupSound(playlist, { &Game::OnLoadedPlaylist, this });
 		playlistStream.close();
+		return Ok();
 	}
+	return make_result_error<LoadError>(LoadErrorCode::InvalidFolder);
+}
+
+void Game::OnLoadedPlaylist(SoundManager::LoadResult result) const
+{
+	ASSERT(result.isOk(), result.unwrapErrOr(ISoundLoader::ErrorCode::Unknown).What().c_str());
 }

@@ -3,7 +3,7 @@
 //
 
 #pragma once
-
+#include <Windows.h>
 #include <cmath>
 #include <cstdint>
 #include <exception>

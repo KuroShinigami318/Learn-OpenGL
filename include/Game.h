@@ -32,6 +32,7 @@ public:
 	utils::Signal_mt<void(), SignalKey> sig_onExit;
 	void Tick(float delta);
 	LoadResult LoadPlaylist(const std::string& folder) const;
+	void RequestExit();
 
 private:
 	// Messages
@@ -46,7 +47,7 @@ private:
 	uint64_t                                    m_frame;
 	uint64_t                                    m_lastFrame;
 	float										m_preUpdateTime;
-	// Render Thread
+
 	utils::Signal<void(float), SignalKey>		sig_resetTimer;
 	std::vector<utils::Connection>				m_connections;
 };

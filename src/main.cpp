@@ -1,6 +1,7 @@
 // HelloTriangle.cpp : Defines the entry point for the application.
 //
 #include "stdafx.h"
+#include "async_utils.h"
 #include "ApplicationContext.h"
 #include "FrameThread.h"
 #include "framework.h"
@@ -53,7 +54,7 @@ ApplicationContext* applicationCtx;
 std::unique_ptr<Game> g_game;
 std::mutex mutex;
 std::condition_variable cv;
-utils::unique_ref<utils::WorkerThread<double()>> calcThread(false, "Calc Thread Pool", utils::MODE::MESSAGE_QUEUE_MT, utils::WorkerThread<double()>::ThreadConfig(50, true, 4));
+utils::unique_ref<utils::message_threadpool> calcThread(utils::threadpool_config{ 4, "Calc Thread Pool" });
 std::unique_ptr<utils::IHeartBeats> heart(new utils::HeartBeats(300, utils::BPS()));
 bool m_isExiting, m_isPause, isSignalSuspend, m_isInitDone = false;
 bool firstMouse = true;
@@ -211,7 +212,7 @@ utils::MessageSink_mt& nextFrameQueue = frameThread.GetNextFrameMessageQueue();
 utils::MessageSink& thisFrameQueue = frameThread.GetFrameMessageQueue();
 utils::unique_ref<CalculateVirtualCursorPoint> virtualCursorPoint{new CalculateVirtualCursorPoint()};
 
-int main(int argv, char** argc)
+int main(int argc, char** argv)
 {
     ctx = std::make_unique<ApplicationContext>();
     applicationCtx = static_cast<ApplicationContext*>(ctx.get());
@@ -221,7 +222,7 @@ int main(int argv, char** argc)
         heart.reset(new utils::HeartBeats(fps, utils::BPS()));
     }).Detach();
 
-    InputParser parser(argv, argc);
+    InputParser parser(argc, argv);
     std::string folder("assets");
     if (InputParser::position_t positionParser = parser.HaveInputOptions(InputOptions({ "-folder" })))
     {
@@ -241,10 +242,10 @@ int main(int argv, char** argc)
         s_clock->sig_onTick.Connect(&SoundManager::Update, applicationCtx->soundManager).Detach();
     });
 
-    utils::WorkerThread_waitable<double> exportWaitable;
+    utils::async_waitable<utils::async_waitable<void>> closeSoundWaitable;
     sig_onExport.Connect([&]()
     {
-        if (exportWaitable.IsInitialized() && !exportWaitable.HasFinished()) return;
+        if (closeSoundWaitable.IsInitialized() && !closeSoundWaitable.HasFinished()) return;
         utils::unique_ref<ISoundPlayer> soundPlayer = applicationCtx->soundManager.Load("assets/emotion.mp3").expect("Unexpected error");
         soundPlayer->PlayFromStart().ignoreResult();
         DEBUG_LOG("Debug", "Meter Performance");
@@ -255,11 +256,20 @@ int main(int argv, char** argc)
         };
         Calc_pi_MT(1E9, callback);
         std::function<void(utils::unique_ref<ISoundPlayer>)> closedSound = [](utils::unique_ref<ISoundPlayer>) {};
-        exportWaitable = calcThread->PushCallback([closedSound](utils::unique_ref<ISoundPlayer> soundPlayer)
+        closeSoundWaitable = utils::async(*calcThread, [closedSound](utils::unique_ref<ISoundPlayer> soundPlayer)
         {
-            utils::async(mainThreadQueue, closedSound, std::move(soundPlayer));
-            return 0.;
+            return utils::async(mainThreadQueue, closedSound, std::move(soundPlayer));
         }, std::move(soundPlayer));
+    }).Detach();
+    g_game->sig_onExit.Connect([&closeSoundWaitable]()
+    {
+        closeSoundWaitable.SetPriority(utils::MessagePriority::Immediately);
+        utils::RecursiveYielder yielder(nextFrameQueue, frameThread, *s_clock);
+        auto asyncResult = yield_for_async(yielder, std::move(closeSoundWaitable));
+        if (asyncResult.isOk())
+        {
+            yield_for_async(yielder, asyncResult.unwrap()).ignoreResult();
+        }
     }).Detach();
     ctx->sig_onKeyDown.Connect([](int key)
     {
@@ -291,7 +301,7 @@ int main(int argv, char** argc)
     MyRegisterClass(GetModuleHandle(NULL));
 
     // Perform application initialization:
-    if (!InitInstance(GetModuleHandle(NULL), argv))
+    if (!InitInstance(GetModuleHandle(NULL), argc))
     {
         return FALSE;
     }
@@ -324,7 +334,6 @@ int main(int argv, char** argc)
             {
                 frameThread.Submit(delta);
                 g_game->Tick(delta);
-                calcThread->Dispatch();
                 frameThread.Wait();
             }
             actualElapsed = utils::steady_clock::now() - beginFrameTimePoint;
@@ -338,7 +347,6 @@ int main(int argv, char** argc)
 
     g_game.reset();
     utils::Log::d("Main Thread", "Exiting Game");
-    calcThread->StopAsync();
     utils::Log::Wait();
 
     return (int) msg.wParam;
@@ -523,42 +531,16 @@ double Calc_pi(double n, double start, double skip)
     return result * 4;
 }
 
-using MessageHandle = utils::WorkerThread_waitable<double>;
-
-void FinalCalculation(double previousResult, std::shared_ptr<std::vector<MessageHandle>> results, std::function<void(const double&)> callback)
-{
-    double result = previousResult;
-    for (auto futureIt = results->cbegin(); futureIt != results->cend();)
-    {
-        const MessageHandle& futureResult = *futureIt;
-        if (!futureResult.HasFinished())
-        {
-            utils::async(*calcThread, utils::CallableBound<void()>(FinalCalculation, result, results, callback));
-            return;
-        }
-        Result<double, utils::MessageHandleERR> messageHandleResult = futureResult.GetResult();
-        if (messageHandleResult.isOk())
-        {
-            result += messageHandleResult.unwrap();
-        }
-        else
-        {
-            ERROR_LOG("Debug", "error: {}", messageHandleResult.unwrapErr());
-        }
-        futureIt = results->erase(futureIt);
-    }
-    callback(result);
-}
-
 utils::Connection s_exitConnection;
 
 void Calc_pi_MT(double n, std::function<void(const double&)> callback)
 {
+    using MessageHandle = utils::async_waitable<double>;
     unsigned int CONCURRENCY = std::thread::hardware_concurrency();
     std::shared_ptr<std::vector<MessageHandle>> results = std::make_shared<std::vector<MessageHandle>>();
     for (unsigned int i = 0; i < CONCURRENCY; i++)
     {
-        results->push_back(calcThread->PushCallback(&Calc_pi, n, i, CONCURRENCY));
+        results->push_back(utils::async(*calcThread, &Calc_pi, n, i, CONCURRENCY));
     }
     s_exitConnection = g_game->sig_onExit.Connect([results]()
     {
@@ -573,7 +555,35 @@ void Calc_pi_MT(double n, std::function<void(const double&)> callback)
             INFO_LOG("Cancel", "Cancel Successfully");
         }
     });
-    utils::async(*calcThread, utils::CallableBound<void()>(FinalCalculation, 0, results, callback));
+
+    using RecursionWrapperType = utils::RecursionWrapper<double, std::shared_ptr<std::vector<MessageHandle>>, std::function<void(const double&)>>;
+    using SharedRecursionWrapperType = std::shared_ptr<RecursionWrapperType>;
+
+    auto finalCalculation = [](SharedRecursionWrapperType i_sharedWrapper, double previousResult, std::shared_ptr<std::vector<MessageHandle>> results, std::function<void(const double&)> callback)
+    {
+        double result = previousResult;
+        for (auto futureIt = results->cbegin(); futureIt != results->cend();)
+        {
+            const MessageHandle& futureResult = *futureIt;
+            if (!futureResult.HasFinished())
+            {
+                utils::async(*calcThread, &RecursionWrapperType::operator(), i_sharedWrapper.get(), i_sharedWrapper, result, results, callback);
+                return;
+            }
+            Result<double, utils::MessageHandleERR> messageHandleResult = futureResult.GetResult();
+            if (messageHandleResult.isOk())
+            {
+                result += messageHandleResult.unwrap();
+            }
+            else
+            {
+                ERROR_LOG("Debug", "error: {}", messageHandleResult.unwrapErr());
+            }
+            futureIt = results->erase(futureIt);
+        }
+        callback(result);
+    };
+    utils::async(*calcThread, finalCalculation, RecursionWrapperType::MakeShared(finalCalculation), 0, results, callback);
 }
 
 void Move(VKEY move, float deltaTime)
@@ -964,6 +974,12 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 
 void ExitGame(HWND hWnd)
 {
+    g_game->RequestExit();
+    if (s_clock->IsUpdating())
+    {
+        utils::async(nextFrameQueue, ExitGame, hWnd);
+        return;
+    }
     m_isExiting = true;
     cv.notify_one();
     ASSERT(!s_clock->IsUpdating());

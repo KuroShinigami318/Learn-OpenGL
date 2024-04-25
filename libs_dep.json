@@ -3,7 +3,7 @@
  {
     "name": "common",
     "prj_name": "CommonLib",
-    "tag": "v5.1.4"
+    "tag": "v5.1.5"
  },
  {
     "name": "GLAD",
@@ -33,7 +33,7 @@
  {
     "name": "BLog",
     "prj_name": "BLog",
-    "tag": "v0.0.1"
+    "tag": "v0.0.2"
  },
  {
     "name": "MakePlaylist",

@@ -38,7 +38,12 @@ Game::Game(IApplicationContext& i_ctx, utils::IMessageQueue& nextFrameQueue) : m
 
 Game::~Game()
 {
+}
+
+void Game::RequestExit()
+{
 	utils::Access<SignalKey>(sig_onExit).Emit();
+	utils::Access<SignalKey>(sig_onExit).DisconnectAll();
 }
 
 void Game::Tick(float delta)

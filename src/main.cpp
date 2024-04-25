@@ -162,7 +162,6 @@ GLvoid              initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)
 void                FramePrologue(float deltaTime);
 void                FrameEpilogue();
 void                MovementUpdate(float delta);
-void                SwitchFlag(bool& o_flag, bool value);
 GLvoid              drawScene();
 
 struct CalculateVirtualCursorPoint
@@ -294,6 +293,8 @@ int main(int argc, char** argv)
             lightColor = isLightOn ? glm::vec3(0.0f) : glm::vec3(1.0f);
         }
     }).Detach();
+    ctx->sig_onSuspend.ConnectAsync(&mainThreadQueue, []() { isSignalSuspend = true; }).Detach();
+    ctx->sig_onResume.ConnectAsync(&mainThreadQueue, []() { isSignalSuspend = false; }).Detach();
 
     // Initialize global strings
     LoadStringW(GetModuleHandle(NULL), IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
@@ -783,7 +784,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case IDM_PAUSE:
         {
             m_isPause = !m_isPause;
-            utils::async(mainThreadQueue, &SwitchFlag, isSignalSuspend, m_isPause);
             m_isPause ? applicationCtx->SuspendAsync() : applicationCtx->ResumeAsync();
         }
         default:
@@ -847,7 +847,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             LockCursor(true, hWnd);
             if (!m_isPause)
             {
-                isSignalSuspend = false;
                 applicationCtx->ResumeAsync();
                 for (VKEY iterKey = VKEY::_FIRST; iterKey != VKEY::_COUNT; ++iterKey)
                 {
@@ -857,7 +856,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         else
         {
-            utils::async(mainThreadQueue, &SwitchFlag, isSignalSuspend, true);
             if (!isSignalSuspend)
             {
                 applicationCtx->SuspendAsync();
@@ -1096,11 +1094,6 @@ void MovementUpdate(float delta)
         }
         Move(vkey, delta);
     }
-}
-
-void SwitchFlag(bool& o_flag, bool value)
-{
-    o_flag = value;
 }
 
 GLvoid initializeShaderProgram(GLsizei ctxWidth, GLsizei ctxHeight)

@@ -981,6 +981,7 @@ void ExitGame(HWND hWnd)
     m_isExiting = true;
     cv.notify_one();
     ASSERT(!s_clock->IsUpdating());
+    thisFrameQueue.cancel();
     s_clock.reset();
     applicationCtx->soundManager.Shutdown();
     applicationCtx->soundManager.SetThreadId(utils::details::threading::thread_id_t::k_invalid);

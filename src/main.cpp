@@ -236,7 +236,6 @@ int main(int argc, char** argv)
     {
         s_clock = std::make_unique<utils::SystemClock>();
         ctx->soundManager.SetThreadId(utils::GetCurrentThreadID());
-        ctx->soundManager.SetYieler(std::make_unique<utils::CancellableRecursiveYielder>(nextFrameQueue, frameThread, *s_clock));
         s_clock->sig_onTick.Connect(&MovementUpdate).Detach();
         s_clock->sig_onTick.Connect(&SoundManager::Update, applicationCtx->soundManager).Detach();
     });

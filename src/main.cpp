@@ -337,8 +337,8 @@ int main(int argc, char** argv)
                 frameThread.Wait();
             }
             actualElapsed = utils::steady_clock::now() - beginFrameTimePoint;
-            auto remaining = heart->cast_to_duration_as_nanoseconds() - actualElapsed;
-            lastFrameTimePoint += remaining.count() > 0 ? actualElapsed + remaining : actualElapsed;
+            auto remaining = heart->cast_to_duration() - actualElapsed;
+            lastFrameTimePoint += utils::IsInBounds(remaining.count(), utils::duration<double>::zero().count(), std::numeric_limits<double>::infinity()) ? actualElapsed + std::chrono::duration_cast<utils::nanosecs>(remaining) : actualElapsed;
             std::unique_lock lk(mutex);
             cv.wait_until(lk, lastFrameTimePoint, []() {return m_isExiting; });
             mainThreadQueue.dispatch();

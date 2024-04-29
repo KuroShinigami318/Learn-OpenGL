@@ -55,7 +55,7 @@ std::unique_ptr<Game> g_game;
 std::mutex mutex;
 std::condition_variable cv;
 utils::unique_ref<utils::message_threadpool> calcThread(utils::threadpool_config{ 4, "Calc Thread Pool" });
-std::unique_ptr<utils::IHeartBeats> heart(new utils::HeartBeats(300, utils::BPS()));
+std::unique_ptr<utils::IHeartBeats> heart(new utils::HeartBeats(0, utils::BPS()));
 bool m_isExiting, m_isPause, isSignalSuspend, m_isInitDone = false;
 bool firstMouse = true;
 std::unordered_map<VKEY, bool> isKeyPressed;

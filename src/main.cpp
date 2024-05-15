@@ -379,13 +379,14 @@ std::string GetInput()
     return input;
 }
 
-DeclareScopedEnumWithOperatorDefined(Command, DUMMY_NAMESPACE, uint8_t, ChangeFolder);
+DeclareScopedEnumWithOperatorDefined(Command, DUMMY_NAMESPACE, uint8_t, Help, ChangeFolder);
 using CommandMapType = std::unordered_map<std::string, Command>;
 CommandMapType s_commandMap;
 std::vector<std::string> s_commandStringList;
 
 void InitCommands()
 {
+    s_commandMap.emplace("help", Command::Help);
     s_commandMap.emplace("change folder:", Command::ChangeFolder);
     std::for_each(s_commandMap.begin(), s_commandMap.end(), [](CommandMapType::const_reference kv) { s_commandStringList.push_back(kv.first); });
 }
@@ -396,13 +397,20 @@ void ProcessInput(const std::string& input)
     InputOptions inputOptions(s_commandStringList);
     if (InputParser::position_t foundPos = inputParser.HaveInputOptions(inputOptions))
     {
-        switch (s_commandMap[foundPos.inputOptions.foundToken.value()])
+        Command command = s_commandMap[foundPos.inputOptions.foundToken.value()];
+        switch (command)
         {
+        case Command::Help:
+        {
+            INFO_LOG("HELP", "commands: {}", inputOptions.to_string());
+            break;
+        }
         case Command::ChangeFolder:
         {
             g_game->LoadPlaylist(inputParser.ExtractValue(foundPos)).ignoreResult();
             break;
         }
+        default: CRASH_PLAIN_MSG("This should have never happened! Maybe you forgot handle new added command: {}?", command);
         }
     }
 }

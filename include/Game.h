@@ -8,6 +8,7 @@ class StepTimer;
 }
 
 class SoundManager;
+class ISoundPlayer;
 
 struct IApplicationContext;
 
@@ -39,9 +40,10 @@ private:
 	void OnSuspending() const;
 	void OnResuming() const;
 	void Update(float);
-	void OnLoadedPlaylist(SoundManager::LoadResult) const;
+	void OnLoadedPlaylist(SoundManager::LoadResult);
 
 	SoundManager&								m_soundManager;
+	ISoundPlayer*								m_currentPlaying;
 	// Rendering loop timer.
 	utils::unique_ref<DX::StepTimer>			m_timer;
 	uint64_t                                    m_frame;

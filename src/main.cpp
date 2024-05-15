@@ -210,6 +210,12 @@ utils::FrameThread<void(float)> frameThread{ {FramePrologue}, {FrameEpilogue} };
 utils::MessageSink_mt& nextFrameQueue = frameThread.GetNextFrameMessageQueue();
 utils::MessageSink& thisFrameQueue = frameThread.GetFrameMessageQueue();
 utils::unique_ref<CalculateVirtualCursorPoint> virtualCursorPoint{new CalculateVirtualCursorPoint()};
+utils::message_thread s_inputThread{utils::thread_config("input thread")};
+utils::async_waitable<std::string> s_inputResult;
+
+std::string GetInput();
+void InitCommands();
+void ProcessInput(const std::string&);
 
 int main(int argc, char** argv)
 {
@@ -228,6 +234,7 @@ int main(int argc, char** argv)
         folder = parser.ExtractValue(positionParser);
     }
 
+    InitCommands();
     g_game = std::make_unique<Game>(*ctx, nextFrameQueue);
     Game::LoadResult loadResult = g_game->LoadPlaylist(folder);
     ASSERT_PLAIN_MSG(loadResult.isOk(), "Load Playlist failed: {}", loadResult.unwrapErrOr(Game::LoadErrorCode::InvalidFolder));
@@ -238,6 +245,19 @@ int main(int argc, char** argv)
         ctx->soundManager.SetThreadId(utils::GetCurrentThreadID());
         s_clock->sig_onTick.Connect(&MovementUpdate).Detach();
         s_clock->sig_onTick.Connect(&SoundManager::Update, applicationCtx->soundManager).Detach();
+        s_clock->sig_onTick.Connect([](float)
+        {
+            if (s_inputResult.HasFinished())
+            {
+                std::string& input = *s_inputResult.GetPtrResult().unwrap();
+                std::transform(input.begin(), input.end(), input.begin(), [](char c) {return std::tolower(c); });
+                ProcessInput(input);
+            }
+            if (!s_inputResult.IsInitialized() || s_inputResult.HasFinished())
+            {
+                s_inputResult = utils::async(s_inputThread, GetInput);
+            }
+        }).Detach();
     });
 
     utils::async_waitable<utils::async_waitable<void>> closeSoundWaitable;
@@ -350,6 +370,41 @@ int main(int argc, char** argv)
     utils::Log::Wait();
 
     return (int) msg.wParam;
+}
+
+std::string GetInput()
+{
+    std::string input;
+    std::getline(std::cin, input);
+    return input;
+}
+
+DeclareScopedEnumWithOperatorDefined(Command, DUMMY_NAMESPACE, uint8_t, ChangeFolder);
+using CommandMapType = std::unordered_map<std::string, Command>;
+CommandMapType s_commandMap;
+std::vector<std::string> s_commandStringList;
+
+void InitCommands()
+{
+    s_commandMap.emplace("change folder:", Command::ChangeFolder);
+    std::for_each(s_commandMap.begin(), s_commandMap.end(), [](CommandMapType::const_reference kv) { s_commandStringList.push_back(kv.first); });
+}
+
+void ProcessInput(const std::string& input)
+{
+    InputParser inputParser({ input });
+    InputOptions inputOptions(s_commandStringList);
+    if (InputParser::position_t foundPos = inputParser.HaveInputOptions(inputOptions))
+    {
+        switch (s_commandMap[foundPos.inputOptions.foundToken.value()])
+        {
+        case Command::ChangeFolder:
+        {
+            g_game->LoadPlaylist(inputParser.ExtractValue(foundPos)).ignoreResult();
+            break;
+        }
+        }
+    }
 }
 
 void CleanResource()
@@ -980,6 +1035,10 @@ void ExitGame(HWND hWnd)
     m_isExiting = true;
     cv.notify_one();
     ASSERT(!s_clock->IsUpdating());
+    if (!s_inputResult.HasFinished())
+    {
+        s_inputThread.terminate();
+    }
     thisFrameQueue.cancel();
     s_clock.reset();
     applicationCtx->soundManager.Shutdown();

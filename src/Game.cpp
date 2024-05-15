@@ -28,7 +28,7 @@ Game::Game(IApplicationContext& i_ctx, utils::IMessageQueue& nextFrameQueue) : m
 	{
 		ERROR_LOG("SOUND_ERROR", "{}\n", error);
 	}));
-	m_connections.push_back(i_ctx.soundManager.sig_onSoundPlaying.Connect([](ISoundPlayer* playing)
+	m_connections.push_back(i_ctx.soundManager.sig_onSoundPlaying.Connect([this](ISoundPlayer* playing)
 	{
 		INFO_LOG_WITH_FORMAT(utils::Log::TextFormat(utils::Log::TextStyle::Reset, {0, 255, 0}), "SOUND_INFO", "{}\n", playing->GetSoundName());
 	}));
@@ -99,14 +99,19 @@ Game::LoadResult Game::LoadPlaylist(const std::string& folder) const
 			tempbuff = folder +"/" + tempbuff;
 			playlist.push_back(tempbuff);
 		}
-		m_soundManager.PlayGroupSound(playlist, { &Game::OnLoadedPlaylist, this });
+		m_soundManager.PlayGroupSound(playlist, { &Game::OnLoadedPlaylist, const_cast<Game*>(this) });
 		playlistStream.close();
 		return Ok();
 	}
 	return make_result_error<LoadError>(LoadErrorCode::InvalidFolder);
 }
 
-void Game::OnLoadedPlaylist(SoundManager::LoadResult result) const
+void Game::OnLoadedPlaylist(SoundManager::LoadResult result)
 {
+	if (m_currentPlaying)
+	{
+		m_soundManager.StopGroupSound(*m_currentPlaying);
+	}
+	m_currentPlaying = result.unwrap();
 	ASSERT(result.isOk(), result.unwrapErrOr(ISoundLoader::ErrorCode::Unknown).What().c_str());
 }

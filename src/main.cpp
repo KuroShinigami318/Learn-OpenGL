@@ -23,6 +23,7 @@
 #include "ISoundLoader.h"
 #include "SoundManager.h"
 #include "ThreadControl.h"
+#include "HeartBeats.h"
 
 #define MAX_LOADSTRING 100
 
@@ -71,6 +72,7 @@ const int divide = 2;
 const float divided = 1.0f / (float) divide;
 constexpr int max_scale = 200;
 float m_totalTicks = 0;
+float m_clockRatio = 1.0;
 unsigned int shaderProgram;
 unsigned int VBO, VAO, EBO, internalFormat;
 unsigned int lightCubeVAO;
@@ -379,7 +381,7 @@ std::string GetInput()
     return input;
 }
 
-DeclareScopedEnumWithOperatorDefined(Command, DUMMY_NAMESPACE, uint8_t, Help, ChangeFolder);
+DeclareScopedEnumWithOperatorDefined(Command, DUMMY_NAMESPACE, uint8_t, Help, ChangeFolder, SuspendSound, ResumeSound, ChangeClockRatio);
 using CommandMapType = std::unordered_map<std::string, Command>;
 CommandMapType s_commandMap;
 std::vector<std::string> s_commandStringList;
@@ -388,6 +390,9 @@ void InitCommands()
 {
     s_commandMap.emplace("help", Command::Help);
     s_commandMap.emplace("change folder:", Command::ChangeFolder);
+    s_commandMap.emplace("suspend sound", Command::SuspendSound);
+    s_commandMap.emplace("resume sound", Command::ResumeSound);
+    s_commandMap.emplace("change clock ratio:", Command::ChangeClockRatio);
     std::for_each(s_commandMap.begin(), s_commandMap.end(), [](CommandMapType::const_reference kv) { s_commandStringList.push_back(kv.first); });
 }
 
@@ -408,6 +413,25 @@ void ProcessInput(const std::string& input)
         case Command::ChangeFolder:
         {
             g_game->LoadPlaylist(inputParser.ExtractValue(foundPos)).ignoreResult();
+            break;
+        }
+        case Command::SuspendSound:
+        {
+            g_game->SuspendSound();
+            break;
+        }
+        case Command::ResumeSound:
+        {
+            g_game->ResumeSound();
+            break;
+        }
+        case Command::ChangeClockRatio:
+        {
+            const float ratioExtracted = atof(inputParser.ExtractValue(foundPos).c_str());
+            if (ratioExtracted != 0)
+            {
+                m_clockRatio = ratioExtracted;
+            }
             break;
         }
         default: CRASH_PLAIN_MSG("This should have never happened! Maybe you forgot handle new added command: {}?", command);
@@ -610,7 +634,7 @@ void Calc_pi_MT(double n, std::function<void(const double&)> callback)
         for (MessageHandle& result : *results)
         {
             auto cancelResult = result.Cancel();
-            if (cancelResult != utils::MessageHandleERR::SUCCESS)
+            if (cancelResult != utils::MessageHandleStatus::SUCCESS)
             {
                 ERROR_LOG("Cancel Result", "cancel failed: {}", cancelResult);
                 continue;
@@ -633,7 +657,7 @@ void Calc_pi_MT(double n, std::function<void(const double&)> callback)
                 utils::async(*calcThread, &RecursionWrapperType::operator(), i_sharedWrapper.get(), i_sharedWrapper, result, results, callback);
                 return;
             }
-            Result<double, utils::MessageHandleERR> messageHandleResult = futureResult.GetResult();
+            Result<double, utils::MessageHandleStatus> messageHandleResult = futureResult.GetResult();
             if (messageHandleResult.isOk())
             {
                 result += messageHandleResult.unwrap();
@@ -894,7 +918,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     break;
     case WM_SIZE:
     {
-        if (wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)
+        if (wParam == SIZE_MINIMIZED)
+        {
+            if (!isSignalSuspend)
+            {
+                applicationCtx->SuspendAsync();
+            }
+        }
+        else if (wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)
         {
             GetClientRect(hWnd, &rect);
             utils::async(nextFrameQueue, &resize, (GLsizei)rect.right, (GLsizei)rect.bottom);
@@ -905,23 +936,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
         if (wParam)
         {
-            isKeyPressed[VKEY::ALT] = false;
-            LockCursor(true, hWnd);
-            if (!m_isPause)
+            if (isSignalSuspend && !m_isPause)
             {
                 applicationCtx->ResumeAsync();
-                for (VKEY iterKey = VKEY::_FIRST; iterKey != VKEY::_COUNT; ++iterKey)
-                {
-                    isKeyPressed[iterKey] = false;
-                }
+            }
+            isKeyPressed[VKEY::ALT] = false;
+            LockCursor(true, hWnd);
+            for (VKEY iterKey = VKEY::_FIRST; iterKey != VKEY::_COUNT; ++iterKey)
+            {
+                isKeyPressed[iterKey] = false;
             }
         }
         else
         {
-            if (!isSignalSuspend)
-            {
-                applicationCtx->SuspendAsync();
-            }
             if (!isKeyPressed[VKEY::ALT])
             {
                 LockCursor(false, hWnd);
@@ -1134,11 +1161,12 @@ GLvoid drawScene()
 
 void FramePrologue(float deltaTime)
 {
+    float gameplayDeltaTime = m_clockRatio * deltaTime;
     if (s_clock)
     {
-        utils::async(thisFrameQueue, &utils::SystemClock::Update, s_clock.get(), deltaTime);
+        utils::async(thisFrameQueue, &utils::SystemClock::Update, s_clock.get(), gameplayDeltaTime);
     }
-    m_totalTicks += deltaTime;
+    m_totalTicks += gameplayDeltaTime;
 }
 
 void FrameEpilogue()

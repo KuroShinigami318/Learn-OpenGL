@@ -33,6 +33,8 @@ public:
 	utils::Signal_mt<void(), SignalKey> sig_onExit;
 	void Tick(float delta);
 	LoadResult LoadPlaylist(const std::string& folder) const;
+	void SuspendSound() const;
+	void ResumeSound() const;
 	void RequestExit();
 
 private:

@@ -56,7 +56,7 @@ void Game::Tick(float delta)
 
 void Game::Update(float)
 {
-	float elapsed = (float)m_timer->GetTotalSeconds() - m_preUpdateTime;
+	/*float elapsed = (float)m_timer->GetTotalSeconds() - m_preUpdateTime;
 	if (elapsed > 1)
 	{
 		utils::Log::i("Game::Update", utils::Format("Get FPS: {}", m_timer->GetFramesPerSecond()));
@@ -68,7 +68,17 @@ void Game::Update(float)
 		utils::Log::e("Game::Update", utils::Format("Reset time due to undefined behavior: {}", elapsed));
 		utils::Access<SignalKey>(sig_resetTimer).Emit(m_timer->GetTotalSeconds());
 	}
-	m_frame++;
+	m_frame++;*/
+}
+
+void Game::SuspendSound() const
+{
+	m_soundManager.Suspend();
+}
+
+void Game::ResumeSound() const
+{
+	m_soundManager.Resume();
 }
 
 void Game::OnSuspending() const

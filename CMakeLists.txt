@@ -1,4 +1,7 @@
-﻿cmake_minimum_required (VERSION 3.23)
+﻿# CMakeList.txt : CMake project for CrossPlatformPractice, include source and define
+# project specific logic here.
+#
+cmake_minimum_required (VERSION 3.23)
 
 # Enable Hot Reload for MSVC compilers if supported.
 if (POLICY CMP0141)
@@ -7,11 +10,10 @@ if (POLICY CMP0141)
 endif()
 set(ENV{CMAKE_BUILD_PARALLEL_LEVEL} 8)
 
-project ("LearnOpenGL")
-option(GLM_STATIC_LIBRARY_ENABLE "GLM static library" ON)
-set(CMAKE_CXX_STANDARD 20)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/Project This_Project)
+project(${This_Project})
 
-set(ASSETS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets)
+set(CMAKE_CXX_STANDARD 20)
 set(LIBS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/libs_dep.json LIBS_DEP_JSON)
 string(JSON total_libs LENGTH "${LIBS_DEP_JSON}" libs)
@@ -22,17 +24,19 @@ foreach(IDX RANGE ${total_libs})
     # Get the URL from the current JSON element.
     string(JSON TARGET_LINK_PRJ GET ${LIBS_DEP_JSON} libs ${IDX} prj_name)
     if (NOT TARGET ${TARGET_LINK_PRJ})
+       #set(${TARGET_LINK_PRJ}_PREFER_USE_PREBUILT ON)
        add_subdirectory(${LIBS_DIR}/${CUR_NAME} ${CMAKE_BINARY_DIR}/${CUR_NAME})
     endif()
     list(APPEND TARGETS_LINK_PRJ ${TARGET_LINK_PRJ})
 endforeach()
 
 # Add source to this project's executable.
-set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
-file(GLOB SOURCES ${SRC_DIR}/*.cpp)
-file(GLOB RESOURCES ${SRC_DIR}/*.ico ${SRC_DIR}/*.rc)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-add_executable(${PROJECT_NAME} ${SOURCES} ${RESOURCES})
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
+set(INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
+file(GLOB_RECURSE HEADERS CONFIGURE_DEPENDS ${INCLUDE_DIR}/*.h ${INCLUDE_DIR}/*.hpp)
+include_directories(${INCLUDE_DIR})
+
+add_executable (${PROJECT_NAME} ${SOURCES})
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME})
 set_target_properties(${PROJECT_NAME} PROPERTIES
                       RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_CURRENT_SOURCE_DIR}/Debug
@@ -40,8 +44,12 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
                       RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_CURRENT_SOURCE_DIR}/MinSizeRel
                       RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_CURRENT_SOURCE_DIR}/RelWithDebInfo
 )
-
-if(EXISTS ${ASSETS_DIR})
+target_sources(${PROJECT_NAME} PUBLIC
+    FILE_SET HEADERS
+    BASE_DIRS ${INCLUDE_DIR}
+    FILES ${HEADERS}
+)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/assets)
 add_custom_target(copy_assets
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/assets ${CMAKE_CURRENT_BINARY_DIR}/assets
 )
@@ -58,3 +66,4 @@ set(TARGET_LINK_LIB ${PREBUILT_${TARGET_LINK_LIB}})
 endif()
 target_link_libraries(${PROJECT_NAME} ${TARGET_LINK_LIB})
 endforeach()
+target_precompile_headers(${PROJECT_NAME} REUSE_FROM CommonLib)

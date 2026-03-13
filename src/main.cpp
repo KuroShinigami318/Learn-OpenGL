@@ -55,7 +55,7 @@ ApplicationContext* applicationCtx;
 std::unique_ptr<Game> g_game;
 std::mutex mutex;
 std::condition_variable cv;
-utils::unique_ref<utils::message_threadpool> calcThread(utils::threadpool_config{ 4, "Calc Thread Pool" });
+utils::unique_ref<utils::message_threadpool> calcThread(utils::make_unique<utils::message_threadpool>(utils::threadpool_config{ 4, "Calc Thread Pool" }));
 std::unique_ptr<utils::IHeartBeats> heart(new utils::HeartBeats(0, utils::BPS()));
 bool m_isExiting, m_isPause, isSignalSuspend, m_isInitDone = false;
 bool firstMouse = true;
@@ -657,7 +657,7 @@ void Calc_pi_MT(double n, std::function<void(const double&)> callback)
                 utils::async(*calcThread, &RecursionWrapperType::operator(), i_sharedWrapper.get(), i_sharedWrapper, result, results, callback);
                 return;
             }
-            Result<double, utils::MessageHandleStatus> messageHandleResult = futureResult.GetResult();
+            utils::Result<double, utils::MessageHandleStatus> messageHandleResult = futureResult.GetResult();
             if (messageHandleResult.isOk())
             {
                 result += messageHandleResult.unwrap();

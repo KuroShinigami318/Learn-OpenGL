@@ -24,7 +24,7 @@ public:
 		InvalidFolder
 	};
 	using LoadError = utils::Error<LoadErrorCode, make_playlist_error>;
-	using LoadResult = Result<void, LoadError>;
+	using LoadResult = utils::Result<void, LoadError>;
 
 public:
 	Game(IApplicationContext& i_ctx, utils::IMessageQueue& nextFrameQueue);

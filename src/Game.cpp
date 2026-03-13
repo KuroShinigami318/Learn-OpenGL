@@ -111,9 +111,9 @@ Game::LoadResult Game::LoadPlaylist(const std::string& folder) const
 		}
 		m_soundManager.PlayGroupSound(playlist, { &Game::OnLoadedPlaylist, const_cast<Game*>(this) });
 		playlistStream.close();
-		return Ok();
+		return utils::Ok();
 	}
-	return make_result_error<LoadError>(LoadErrorCode::InvalidFolder);
+	return utils::make_result_error<LoadError>(LoadErrorCode::InvalidFolder);
 }
 
 void Game::OnLoadedPlaylist(SoundManager::LoadResult result)

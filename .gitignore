@@ -1,6 +1,7 @@
 /libs
 /build
 /build_scripts
+/scripts
 /Debug
 /Release
 /MinSizeRel
